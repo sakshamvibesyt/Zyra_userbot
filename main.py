@@ -147,6 +147,11 @@ async def cb_toggle(e):
     disabled = set(doc.get("disabled", []))
     disabled.symmetric_difference_update({name})
     await db.users.update_one({"_id": uid}, {"$set": {"disabled": list(disabled)}})
+    # Apply plugin changes immediately to this user's running client.
+    await manager.kill(uid)
+    fresh = await db.users.find_one({"_id": uid})
+    if fresh and fresh.get("enabled", True) and not fresh.get("dead", False):
+        await manager.spawn(fresh)
     await e.answer(name + ": " + ("OFF" if name in disabled else "ON"))
 
 
@@ -235,8 +240,16 @@ async def main():
     await start_web()
     await bot.start(bot_token=BOT_TOKEN)
     await manager.boot_all()
+    monitor_task = asyncio.create_task(manager.monitor_connections(), name="client-reconnect-monitor")
     log.info("ready")
-    await bot.run_until_disconnected()
+    try:
+        await bot.run_until_disconnected()
+    finally:
+        monitor_task.cancel()
+        try:
+            await monitor_task
+        except asyncio.CancelledError:
+            pass
 
 
 if __name__ == "__main__":

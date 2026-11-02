@@ -76,5 +76,30 @@ class Manager:
             await asyncio.sleep(2.5)
         log.info("booted %s clients", n)
 
+    async def monitor_connections(self):
+        """Reconnect existing user clients when their Telegram connection drops.
+
+        This repairs transient Telegram/network disconnects without periodically
+        restarting the whole process. It cannot prevent Render Free from sleeping.
+        """
+        while True:
+            for uid, client in list(self.clients.items()):
+                try:
+                    if client.is_connected():
+                        continue
+                    log.warning("client disconnected uid=%s; reconnecting", uid)
+                    await client.connect()
+                    if not await client.is_user_authorized():
+                        log.error("client authorization expired uid=%s", uid)
+                        await db.users.update_one({"_id": uid}, {"$set": {"dead": True}})
+                        await self.kill(uid)
+                        continue
+                    log.info("reconnected uid=%s", uid)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.exception("reconnect failed uid=%s; will retry", uid)
+            await asyncio.sleep(30)
+
 
 manager = Manager()
