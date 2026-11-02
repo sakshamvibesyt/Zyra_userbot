@@ -62,3 +62,4 @@ Notes, auto-replies and filters are stored in MongoDB. Keep `MONGO_URL` private.
 - The welcome banner is `assets/zyra_welcome.png`; replace it with your own banner using the same filename if desired.
 
 The Add Account button opens the existing login flow. Never share OTPs or 2-step verification passwords with anyone; only connect an account you own.
+\n\n## Add Account callback fix\n\nThe Add Account inline button now initializes the phone login state and replies with the expected instructions. `/cancel` clears an in-progress login. This still requires deployment and a Telegram test.\n

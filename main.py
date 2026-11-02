@@ -166,6 +166,52 @@ async def cb_back_start(e):
     await send_start_menu(e.chat_id)
 
 
+async def start_login(uid, event):
+    """Start the phone-number login flow for the user who pressed Add Account."""
+    if not event.is_private:
+        await event.respond("🔒 Account login sirf bot ke private chat mein karein.")
+        return
+
+    existing = await db.users.find_one({"_id": uid})
+    if existing:
+        await event.respond(
+            "ℹ️ Aapka account pehle se connected hai.\n"
+            "Status ke liye /status use karein. Naya account connect karna ho "
+            "to pehle /logout karein, phir Add Account dabayein."
+        )
+        return
+
+    try:
+        count = await db.users.count_documents({})
+        if count >= MAX_USERS:
+            await event.respond("Abhi account limit full hai. Baad mein try karein.")
+            return
+    except Exception:
+        log.exception("Could not check account limit")
+
+    states[uid] = {"step": "phone"}
+    await event.respond(
+        "➕ <b>Add Telegram Account</b>\n\n"
+        "Apne Telegram account ka phone number international format mein bhejein.\n"
+        "Example: <code>+91XXXXXXXXXX</code>\n\n"
+        "⚠️ Sirf apna account connect karein. OTP ya 2-step password kisi ke saath share na karein.\n"
+        "Cancel karne ke liye /cancel bhejein.",
+        parse_mode="html",
+    )
+
+
+@bot.on(events.NewMessage(pattern=r"^/cancel$"))
+async def cmd_cancel_login(e):
+    uid = e.sender_id
+    st = states.pop(uid, None)
+    if st and st.get("client"):
+        try:
+            await st["client"].disconnect()
+        except Exception:
+            log.exception("Could not disconnect cancelled login client")
+    await e.reply("Login process cancel kar diya gaya hai.")
+
+
 @bot.on(events.CallbackQuery(data=b"login"))
 async def cb_login(e):
     await e.answer()
