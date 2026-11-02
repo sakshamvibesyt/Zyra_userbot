@@ -1,7 +1,7 @@
 import asyncio, logging, os, time
 
 from aiohttp import web
-from telethon import TelegramClient, events, Button
+from telethon import TelegramClient, events, Button, functions, types
 from telethon.sessions import StringSession
 from telethon.errors import (
     SessionPasswordNeededError, PhoneCodeInvalidError, PhoneCodeExpiredError,
@@ -16,6 +16,9 @@ API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 PORT = int(os.environ.get("PORT", 8080))
 MAX_USERS = int(os.environ.get("MAX_USERS", 12))
+OWNER_URL = os.environ.get("OWNER_URL", "https://t.me/Sakshamvenus")
+START_STICKER_ID = os.environ.get("START_STICKER_ID", "").strip()
+WELCOME_IMAGE = os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.png")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("main")
@@ -38,22 +41,93 @@ async def start_web():
     log.info("listening on %s", PORT)
 
 
-HELP = """<b>Commands</b>
-/login — apna account add karo
-/logout — account hatao
-/status — apna status
-/prefix . — command prefix badlo
-/plugins — plugin on/off
-/help — ye list"""
+WELCOME_TEXT = (
+    "<b>✦ 𝐙𝐘𝐑𝐀 𝐔𝐒𝐄𝐑𝐁𝐎𝐓 ✦</b>\n"
+    "<i>Personal Telegram workspace</i>\n\n"
+    "╭─── ⟡ <b>WELCOME</b> ⟡ ───╮\n"
+    "│  Your tools. Your settings. Your control.\n"
+    "╰────────────────────╯\n\n"
+    "▸ Add your own Telegram account to get started.\n"
+    "▸ Manage commands and plugins from one place.\n"
+    "▸ Use /help to explore available controls.\n\n"
+    "<i>Keep your OTP and 2-step verification password private. "
+    "Only connect an account you own.</i>"
+)
+
+HELP_TEXT = (
+    "<b>✦ ZYRA • QUICK HELP</b>\n\n"
+    "<code>/start</code> — Open the welcome menu\n"
+    "<code>/login</code> — Add your Telegram account\n"
+    "<code>/logout</code> — Disconnect and remove your saved session\n"
+    "<code>/status</code> — Check your account status\n"
+    "<code>/prefix .</code> — Change your userbot prefix\n"
+    "<code>/plugins</code> — Manage available plugins\n"
+    "<code>/help</code> — Show this help menu\n\n"
+    "<i>Userbot commands use the configured prefix (default: .).</i>"
+)
+HELP = HELP_TEXT
 
 
 @bot.on(events.NewMessage(pattern=r"^/start$"))
 async def cmd_start(e):
-    await e.reply(
-        "<b>Userbot Host</b>\n\nApna account add karo, plugins chalao.\n"
-        "Session encrypted store hoti hai, 2FA kabhi save nahi hota.",
-        buttons=[[Button.inline("Login", b"login")]],
-    )
+    # Reactions may be unavailable for some bot/chat configurations; never block /start.
+    try:
+        await bot(functions.messages.SendReactionRequest(
+            peer=e.peer_id,
+            msg_id=e.id,
+            reaction=[types.ReactionEmoji(emoticon="👋")],
+        ))
+    except Exception:
+        pass
+
+    if START_STICKER_ID:
+        try:
+            await bot.send_file(e.chat_id, START_STICKER_ID)
+        except Exception as ex:
+            log.warning("start sticker could not be sent: %s", ex)
+
+    buttons = [
+        [Button.inline("✦  ADD ACCOUNT", b"login")],
+        [Button.inline("⌘  HELP", b"help"), Button.url("♛  OWNER", OWNER_URL)],
+    ]
+    try:
+        await bot.send_file(
+            e.chat_id,
+            WELCOME_IMAGE,
+            caption=WELCOME_TEXT,
+            buttons=buttons,
+            parse_mode="html",
+        )
+    except Exception as ex:
+        log.warning("welcome image could not be sent; using text fallback: %s", ex)
+        await e.reply(WELCOME_TEXT, buttons=buttons, parse_mode="html")
+
+
+@bot.on(events.CallbackQuery(data=b"help"))
+async def cb_help(e):
+    await e.answer()
+    await e.respond(HELP_TEXT, parse_mode="html", buttons=[
+        [Button.inline("＋  ADD ACCOUNT", b"login")],
+        [Button.inline("↩  BACK TO START", b"back_start")],
+    ])
+
+
+@bot.on(events.CallbackQuery(data=b"back_start"))
+async def cb_back_start(e):
+    await e.answer()
+    try:
+        await bot.send_file(
+            e.chat_id, WELCOME_IMAGE, caption=WELCOME_TEXT,
+            buttons=[
+                [Button.inline("✦  ADD ACCOUNT", b"login")],
+                [Button.inline("⌘  HELP", b"help"), Button.url("♛  OWNER", OWNER_URL)],
+            ], parse_mode="html",
+        )
+    except Exception:
+        await e.respond(WELCOME_TEXT, parse_mode="html", buttons=[
+            [Button.inline("✦  ADD ACCOUNT", b"login")],
+            [Button.inline("⌘  HELP", b"help"), Button.url("♛  OWNER", OWNER_URL)],
+        ])
 
 
 @bot.on(events.CallbackQuery(data=b"login"))

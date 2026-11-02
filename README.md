@@ -51,3 +51,14 @@ The `extras` plugin adds these commands to each connected user account (default 
 - Admin tools: `.adminhelp`, `.ban`, `.unban`, `.mute`, `.unmute`, `.kick`, `.purge 20`, `.pin`, `.unpin`, `.del`, `.admins`, `.id`
 
 Notes, auto-replies and filters are stored in MongoDB. Keep `MONGO_URL` private. Only use moderation commands in chats where you have permission; avoid unsolicited automated messages.
+
+
+## Zyra welcome menu
+
+`/start` now attempts a 👋 reaction, optionally sends `START_STICKER_ID`, then displays the bundled `assets/zyra_welcome.png` banner with **Add Account**, **Help**, and **Owner** buttons. The reaction is best-effort because Telegram may restrict reactions in some bot/chat configurations.
+
+- `OWNER_URL` changes the Owner button destination.
+- `START_STICKER_ID` is optional; set it to a sticker `file_id` to enable the sticker step. Leave it blank to skip the sticker.
+- The welcome banner is `assets/zyra_welcome.png`; replace it with your own banner using the same filename if desired.
+
+The Add Account button opens the existing login flow. Never share OTPs or 2-step verification passwords with anyone; only connect an account you own.
