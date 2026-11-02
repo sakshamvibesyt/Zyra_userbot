@@ -63,3 +63,12 @@ Notes, auto-replies and filters are stored in MongoDB. Keep `MONGO_URL` private.
 
 The Add Account button opens the existing login flow. Never share OTPs or 2-step verification passwords with anyone; only connect an account you own.
 \n\n## Add Account callback fix\n\nThe Add Account inline button now initializes the phone login state and replies with the expected instructions. `/cancel` clears an in-progress login. This still requires deployment and a Telegram test.\n
+
+## Full interface update
+
+- `/help` and the Start menu Help button open an inline help center.
+- Help sections cover account/settings, utilities, social tools, admin tools, and AI/plugins.
+- The userbot `.help` output is formatted as a categorized command reference.
+- Add Account sends its phone-number prompt directly to the private chat.
+
+Please deploy and test all Telegram callbacks on your own bot; platform permissions and configured environment variables can affect behavior.

@@ -57,16 +57,83 @@ WELCOME_TEXT = (
 )
 
 HELP_TEXT = (
-    "<b>✦ ZYRA • QUICK HELP</b>\n\n"
-    "<code>/start</code> — Open the welcome menu\n"
-    "<code>/login</code> — Add your Telegram account\n"
-    "<code>/logout</code> — Disconnect and remove your saved session\n"
-    "<code>/status</code> — Check your account status\n"
-    "<code>/prefix .</code> — Change your userbot prefix\n"
-    "<code>/plugins</code> — Manage available plugins\n"
-    "<code>/help</code> — Show this help menu\n\n"
-    "<i>Userbot commands use the configured prefix (default: .).</i>"
+    "<b>✦ 𝐙𝐘𝐑𝐀 • 𝐇𝐄𝐋𝐏 𝐂𝐄𝐍𝐓𝐄𝐑 ✦</b>\n"
+    "<i>Your Telegram workspace, neatly organized.</i>\n\n"
+    "Choose a section below to explore commands.\n\n"
+    "<b>ACCOUNT</b>\n"
+    "<code>/login</code> · connect an account\n"
+    "<code>/status</code> · connection status\n"
+    "<code>/logout</code> · disconnect account\n"
+    "<code>/prefix .</code> · set command prefix\n\n"
+    "<b>USERBOT COMMANDS</b>\n"
+    "Use your prefix (default <code>.</code>) in Telegram.\n"
+    "<code>.help</code> · full userbot command list\n"
+    "<code>.plugins</code> is available in the bot menu as <code>/plugins</code>.\n\n"
+    "<i>Tap a category below for examples and usage.</i>"
 )
+
+HELP_SECTIONS = {
+    b"help_account": (
+        "<b>♙ ACCOUNT & SETTINGS</b>\n\n"
+        "<code>/start</code> — welcome menu\n"
+        "<code>/login</code> — connect your own Telegram account\n"
+        "<code>/status</code> — show saved account and online status\n"
+        "<code>/logout</code> — disconnect and remove saved session\n"
+        "<code>/prefix .</code> — change userbot command prefix\n"
+        "<code>/plugins</code> — enable/disable installed plugins\n"
+        "<code>/cancel</code> — cancel an in-progress login\n\n"
+        "<i>Only connect accounts you own. Keep OTP and 2-step password private.</i>"
+    ),
+    b"help_tools": (
+        "<b>✧ TEXT & UTILITY TOOLS</b>\n\n"
+        "<code>.ping</code> — check response speed\n"
+        "<code>.alive</code> — show account status\n"
+        "<code>.echo hello</code> — repeat text\n"
+        "<code>.calc 12*4</code> — basic maths\n"
+        "<code>.reverse hello</code> — reverse text\n"
+        "<code>.clap hello world</code> — clap between words\n"
+        "<code>.emojify hello</code> — add emojis\n"
+        "<code>.spoiler secret</code> — format spoiler text\n"
+        "<code>.type hello</code> — typewriter effect\n\n"
+        "<i>Replace the dot with your configured prefix if you changed it.</i>"
+    ),
+    b"help_social": (
+        "<b>♡ AFK, NOTES & AUTO-REPLIES</b>\n\n"
+        "<code>.afk studying</code> — set AFK status\n"
+        "<code>.unafk</code> — clear AFK status\n"
+        "<code>.note name | text</code> — save a note\n"
+        "<code>.getnote name</code> — read a note\n"
+        "<code>.delnote name</code> — delete a note\n"
+        "<code>.notes</code> — list saved notes\n\n"
+        "<code>.autoreply hi | hello</code> — add an auto-reply\n"
+        "<code>.delreply hi</code> — remove an auto-reply\n"
+        "<code>.replies</code> — list auto-replies\n"
+        "<code>.filter word | reply</code> — add a text filter\n"
+        "<code>.stop word</code> — remove a filter\n"
+        "<code>.filters</code> — list filters\n\n"
+        "<i>Auto-reply/filter rules run while the userbot client is online.</i>"
+    ),
+    b"help_admin": (
+        "<b>⚒ GROUP ADMIN TOOLS</b>\n\n"
+        "Reply to a user's message, then use: <code>.ban</code>, <code>.unban</code>, "
+        "<code>.mute</code>, <code>.unmute</code>, <code>.kick</code>, <code>.del</code>.\n\n"
+        "<code>.pin</code> — pin replied message\n"
+        "<code>.unpin</code> — unpin latest message\n"
+        "<code>.purge 20</code> — delete up to 100 recent messages\n"
+        "<code>.admins</code> — list admins\n"
+        "<code>.id</code> — show chat/user ID\n"
+        "<code>.adminhelp</code> — show admin usage\n\n"
+        "<i>Telegram must allow your account to perform the action. Use moderation tools responsibly.</i>"
+    ),
+    b"help_ai": (
+        "<b>✦ AI & PLUGINS</b>\n\n"
+        "<code>.ai your question</code> — ask the configured AI provider\n"
+        "<code>/plugins</code> — view plugin toggles in the bot chat\n\n"
+        "AI works only when its provider key, model and API base URL are configured correctly.\n"
+        "<i>Plugin changes may restart your connected userbot client.</i>"
+    ),
+}
+
 HELP = HELP_TEXT
 
 
@@ -74,8 +141,24 @@ def start_buttons():
     return [
         [Button.url("➕  ADD TO GROUP", ADD_TO_GROUP_URL)],
         [Button.inline("✦  ADD ACCOUNT", b"login")],
-        [Button.inline("⌘  HELP", b"help"), Button.url("♡  SUPPORT", SUPPORT_URL)],
+        [Button.inline("⌘  HELP CENTER", b"help"), Button.url("♡  SUPPORT", SUPPORT_URL)],
         [Button.url("♛  OWNER", OWNER_URL)],
+    ]
+
+
+def help_buttons():
+    return [
+        [Button.inline("♙ Account & Settings", b"help_account")],
+        [Button.inline("✧ Text & Utilities", b"help_tools"), Button.inline("♡ Social Tools", b"help_social")],
+        [Button.inline("⚒ Admin Tools", b"help_admin"), Button.inline("✦ AI & Plugins", b"help_ai")],
+        [Button.inline("↩ Back to Start", b"back_start")],
+    ]
+
+
+def section_buttons():
+    return [
+        [Button.inline("⌂ Help Center", b"help")],
+        [Button.inline("↩ Back to Start", b"back_start")],
     ]
 
 
@@ -147,13 +230,22 @@ async def cb_help(e):
     try:
         await e.delete()
     except Exception as ex:
-        log.warning("Could not delete start menu before help: %s", ex)
-    await bot.send_message(
-        e.chat_id,
-        HELP_TEXT,
-        parse_mode="html",
-        buttons=[[Button.inline("↩  BACK TO START", b"back_start")]],
-    )
+        log.warning("Could not delete previous menu before help: %s", ex)
+    await bot.send_message(e.chat_id, HELP_TEXT, parse_mode="html", buttons=help_buttons())
+
+
+@bot.on(events.CallbackQuery(pattern=rb"^help_(account|tools|social|admin|ai)$"))
+async def cb_help_section(e):
+    await e.answer()
+    key = e.data
+    text = HELP_SECTIONS.get(key)
+    if not text:
+        return
+    try:
+        await e.delete()
+    except Exception as ex:
+        log.warning("Could not delete previous help menu: %s", ex)
+    await bot.send_message(e.chat_id, text, parse_mode="html", buttons=section_buttons())
 
 
 @bot.on(events.CallbackQuery(data=b"back_start"))
@@ -190,14 +282,16 @@ async def start_login(uid, event):
         log.exception("Could not check account limit")
 
     states[uid] = {"step": "phone"}
-    await event.respond(
-        "➕ <b>Add Telegram Account</b>\n\n"
+    prompt = (
+        "<b>➕ ADD TELEGRAM ACCOUNT</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
         "Apne Telegram account ka phone number international format mein bhejein.\n"
         "Example: <code>+91XXXXXXXXXX</code>\n\n"
-        "⚠️ Sirf apna account connect karein. OTP ya 2-step password kisi ke saath share na karein.\n"
-        "Cancel karne ke liye /cancel bhejein.",
-        parse_mode="html",
+        "<i>Login ke liye Telegram OTP aur agar enabled ho to 2-step password lagega.</i>\n"
+        "🔐 Sirf apna account connect karein. OTP/password kisi ke saath share na karein.\n\n"
+        "Cancel karne ke liye /cancel bhejein."
     )
+    await bot.send_message(event.chat_id, prompt, parse_mode="html")
 
 
 @bot.on(events.NewMessage(pattern=r"^/cancel$"))
@@ -227,7 +321,7 @@ async def cmd_login(e):
 
 @bot.on(events.NewMessage(pattern=r"^/help$"))
 async def cmd_help(e):
-    await e.reply(HELP)
+    await bot.send_message(e.chat_id, HELP_TEXT, parse_mode="html", buttons=help_buttons())
 
 
 @bot.on(events.NewMessage(pattern=r"^/logout$"))
