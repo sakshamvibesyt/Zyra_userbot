@@ -72,3 +72,11 @@ The Add Account button opens the existing login flow. Never share OTPs or 2-step
 - Add Account sends its phone-number prompt directly to the private chat.
 
 Please deploy and test all Telegram callbacks on your own bot; platform permissions and configured environment variables can affect behavior.
+
+
+## Profile template commands
+
+- `.clone @username` applies the name, bio and profile photo from an authorized profile source.
+- `.reclone` restores the profile snapshot saved before the first clone.
+- Set `CLONE_ALLOWED_USERNAMES` to a comma-separated list of usernames you own or have explicit permission to use. The plugin refuses other usernames.
+- MongoDB is used to store the original profile snapshot; keep `MONGO_URL` private.
