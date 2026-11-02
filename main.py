@@ -17,6 +17,8 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 PORT = int(os.environ.get("PORT", 8080))
 MAX_USERS = int(os.environ.get("MAX_USERS", 12))
 OWNER_URL = os.environ.get("OWNER_URL", "https://t.me/Sakshamvenus")
+SUPPORT_URL = os.environ.get("SUPPORT_URL", "https://t.me/Sakshamabout_bot")
+ADD_TO_GROUP_URL = os.environ.get("ADD_TO_GROUP_URL", "https://t.me/?startgroup=true")
 START_STICKER_ID = os.environ.get("START_STICKER_ID", "").strip()
 WELCOME_IMAGE = os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.png")
 
@@ -68,66 +70,100 @@ HELP_TEXT = (
 HELP = HELP_TEXT
 
 
+def start_buttons():
+    return [
+        [Button.url("➕  ADD TO GROUP", ADD_TO_GROUP_URL)],
+        [Button.inline("✦  ADD ACCOUNT", b"login")],
+        [Button.inline("⌘  HELP", b"help"), Button.url("♡  SUPPORT", SUPPORT_URL)],
+        [Button.url("♛  OWNER", OWNER_URL)],
+    ]
+
+
+async def send_start_menu(chat_id, reply_to=None):
+    # Prefer a sticker message saved through this bot; this works with Telethon
+    # and survives redeploys when MongoDB is configured.
+    try:
+        saved = await db.settings.find_one({"_id": "start_sticker"})
+        if saved:
+            source = await bot.get_messages(saved["chat_id"], ids=saved["message_id"])
+            if source and source.media:
+                await bot.send_file(chat_id, source, reply_to=reply_to)
+        elif START_STICKER_ID:
+            # Kept as a fallback for compatible Telethon media references.
+            await bot.send_file(chat_id, START_STICKER_ID, reply_to=reply_to)
+    except Exception as ex:
+        log.warning("start sticker could not be sent; send a sticker directly to this bot to save it: %s", ex)
+    try:
+        await bot.send_file(
+            chat_id,
+            WELCOME_IMAGE,
+            caption=WELCOME_TEXT,
+            buttons=start_buttons(),
+            parse_mode="html",
+            reply_to=reply_to,
+        )
+    except Exception as ex:
+        log.warning("welcome image could not be sent; using text fallback: %s", ex)
+        await bot.send_message(chat_id, WELCOME_TEXT, buttons=start_buttons(), parse_mode="html", reply_to=reply_to)
+
+
 @bot.on(events.NewMessage(pattern=r"^/start$"))
 async def cmd_start(e):
-    # Reactions may be unavailable for some bot/chat configurations; never block /start.
     try:
         await bot(functions.messages.SendReactionRequest(
             peer=e.peer_id,
             msg_id=e.id,
             reaction=[types.ReactionEmoji(emoticon="👋")],
         ))
-    except Exception:
-        pass
+    except Exception as ex:
+        log.warning("Start reaction failed (Telegram may not allow this chat/reaction): %s", ex)
+    await send_start_menu(e.chat_id)
 
-    if START_STICKER_ID:
-        try:
-            await bot.send_file(e.chat_id, START_STICKER_ID)
-        except Exception as ex:
-            log.warning("start sticker could not be sent: %s", ex)
 
-    buttons = [
-        [Button.inline("✦  ADD ACCOUNT", b"login")],
-        [Button.inline("⌘  HELP", b"help"), Button.url("♛  OWNER", OWNER_URL)],
-    ]
+@bot.on(events.NewMessage(func=lambda e: e.is_private and bool(e.message and e.message.document) and any(isinstance(a, types.DocumentAttributeSticker) for a in e.message.document.attributes)))
+async def sticker_id_helper(e):
+    # Save the source message reference in MongoDB; Telethon uses MTProto media,
+    # not Bot API file_id strings from third-party ID bots.
     try:
-        await bot.send_file(
-            e.chat_id,
-            WELCOME_IMAGE,
-            caption=WELCOME_TEXT,
-            buttons=buttons,
+        await db.settings.update_one(
+            {"_id": "start_sticker"},
+            {"$set": {"chat_id": e.chat_id, "message_id": e.id}},
+            upsert=True,
+        )
+        await e.reply(
+            "🩵 <b>Zyra welcome sticker saved!</b>\n"
+            "Ab /start par ye sticker welcome image se pehle aayega.\n"
+            "MongoDB enabled rehna chahiye taaki setting redeploy ke baad bhi rahe.",
             parse_mode="html",
         )
     except Exception as ex:
-        log.warning("welcome image could not be sent; using text fallback: %s", ex)
-        await e.reply(WELCOME_TEXT, buttons=buttons, parse_mode="html")
+        log.exception("Could not save welcome sticker")
+        await e.reply("Sticker save nahi hua. Render logs check karo.")
 
 
 @bot.on(events.CallbackQuery(data=b"help"))
 async def cb_help(e):
     await e.answer()
-    await e.respond(HELP_TEXT, parse_mode="html", buttons=[
-        [Button.inline("＋  ADD ACCOUNT", b"login")],
-        [Button.inline("↩  BACK TO START", b"back_start")],
-    ])
+    try:
+        await e.delete()
+    except Exception as ex:
+        log.warning("Could not delete start menu before help: %s", ex)
+    await bot.send_message(
+        e.chat_id,
+        HELP_TEXT,
+        parse_mode="html",
+        buttons=[[Button.inline("↩  BACK TO START", b"back_start")]],
+    )
 
 
 @bot.on(events.CallbackQuery(data=b"back_start"))
 async def cb_back_start(e):
     await e.answer()
     try:
-        await bot.send_file(
-            e.chat_id, WELCOME_IMAGE, caption=WELCOME_TEXT,
-            buttons=[
-                [Button.inline("✦  ADD ACCOUNT", b"login")],
-                [Button.inline("⌘  HELP", b"help"), Button.url("♛  OWNER", OWNER_URL)],
-            ], parse_mode="html",
-        )
-    except Exception:
-        await e.respond(WELCOME_TEXT, parse_mode="html", buttons=[
-            [Button.inline("✦  ADD ACCOUNT", b"login")],
-            [Button.inline("⌘  HELP", b"help"), Button.url("♛  OWNER", OWNER_URL)],
-        ])
+        await e.delete()
+    except Exception as ex:
+        log.warning("Could not delete help message before returning to start: %s", ex)
+    await send_start_menu(e.chat_id)
 
 
 @bot.on(events.CallbackQuery(data=b"login"))
@@ -136,14 +172,6 @@ async def cb_login(e):
     await start_login(e.sender_id, e)
 
 
-async def start_login(uid, e):
-    doc = await db.users.find_one({"_id": uid})
-    if doc and not doc.get("dead"):
-        return await e.reply("Already logged in. Pehle /logout karo.")
-    if await db.users.count_documents({}) >= MAX_USERS:
-        return await e.reply("Server full (%s). Baad me try karo." % MAX_USERS)
-    states[uid] = {"step": "phone"}
-    await e.reply("Phone number bhejo country code ke saath, jaise +919876543210")
 
 
 @bot.on(events.NewMessage(pattern=r"^/login$"))
