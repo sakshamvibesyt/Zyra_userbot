@@ -52,7 +52,7 @@ def setup(client):
     async def reply(e, text):
         await e.reply(text, parse_mode="html")
 
-    @client.on(events.NewMessage(pattern=r"^" + prefix + r"broadcast(?:\s+.*)?$", outgoing=True))
+    @client.on(events.NewMessage(pattern=r"(?s)^" + prefix + r"broadcast(?:\s+.*)?$", outgoing=True))
     async def broadcast_control(e):
         raw = (e.raw_text or "").strip()
         command = raw[len(client.prefix + "broadcast"):].strip()
