@@ -1,4 +1,4 @@
-import asyncio, logging, os, time
+import asyncio, logging, os, time, random
 
 from aiohttp import web
 from telethon import TelegramClient, events, Button, functions, types
@@ -23,6 +23,22 @@ START_STICKER_ID = os.environ.get("START_STICKER_ID", "").strip()
 OWNER_ID = int(os.environ.get("OWNER_ID", "0") or 0)
 WELCOME_IMAGE = os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.png")
 WELCOME_ANIMATION = os.environ.get("WELCOME_ANIMATION", os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.mp4")).strip()
+
+# Rotating start video URLs adapted from the reference KittuBot repository.
+START_VIDEO_URLS = [
+    "https://yukiapi.site/file/6CXCn2De",
+    "https://yukiapi.site/file/YWwD9Qr8",
+    "https://yukiapi.site/file/rsCNQf0j",
+    "https://yukiapi.site/file/dWFtIZny",
+    "https://yukiapi.site/file/eYtZuZwz",
+    "https://yukiapi.site/file/euiiZogt",
+    "https://yukiapi.site/file/UcidJrAQ",
+    "https://yukiapi.site/file/AtKzDFZU",
+    "https://yukiapi.site/file/nGA7YMtQ",
+    "https://yukiapi.site/file/aQSUKqZk",
+    "https://yukiapi.site/file/ns7QmFhQ",
+    "https://yukiapi.site/file/tZCMxz2a",
+]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("main")
@@ -205,7 +221,24 @@ async def send_start_menu(chat_id, reply_to=None):
             await bot.send_file(chat_id, START_STICKER_ID, reply_to=reply_to)
     except Exception as ex:
         log.warning("start sticker could not be sent; send a sticker directly to this bot to save it: %s", ex)
-    # Use a configured MP4/GIF animation when available; otherwise use the static welcome image.
+    # Pick a random remote video for each /start using the reference repo's
+    # hidden-link preview technique. Fall back to the local media if preview fails.
+    random_video = random.choice(START_VIDEO_URLS) if START_VIDEO_URLS else ""
+    if random_video:
+        video_caption = f'<a href="{random_video}">&#8203;</a>' + WELCOME_TEXT
+        try:
+            await bot.send_message(
+                chat_id,
+                video_caption,
+                buttons=start_buttons(),
+                parse_mode="html",
+                link_preview=True,
+                reply_to=reply_to,
+            )
+            return
+        except Exception as ex:
+            log.warning("rotating start video preview failed; using local welcome media: %s", ex)
+
     media_path = WELCOME_ANIMATION if WELCOME_ANIMATION and os.path.isfile(WELCOME_ANIMATION) else WELCOME_IMAGE
     try:
         await bot.send_file(
@@ -219,35 +252,6 @@ async def send_start_menu(chat_id, reply_to=None):
     except Exception as ex:
         log.warning("welcome media could not be sent; using text fallback: %s", ex)
         await bot.send_message(chat_id, WELCOME_TEXT, buttons=start_buttons(), parse_mode="html", reply_to=reply_to)
-
-
-@bot.on(events.NewMessage(pattern=r"^/start$"))
-async def cmd_start(e):
-    log.info("/start received user_id=%s", e.sender_id)
-    try:
-        await bot(functions.messages.SendReactionRequest(
-            peer=e.peer_id,
-            msg_id=e.id,
-            reaction=[types.ReactionEmoji(emoticon="❤️")],
-        ))
-    except Exception as ex:
-        log.warning("Start reaction failed (Telegram may not allow this chat/reaction): %s", ex)
-    await send_start_menu(e.chat_id)
-
-
-def is_welcome_media_message(e):
-    """Accept static/animated stickers, GIFs, and short videos sent to the panel bot."""
-    msg = getattr(e, "message", None)
-    if not e.is_private or not msg or not msg.media:
-        return False
-    doc = getattr(msg, "document", None)
-    if not doc:
-        return False
-    attrs = getattr(doc, "attributes", []) or []
-    if any(isinstance(a, (types.DocumentAttributeSticker, types.DocumentAttributeAnimated)) for a in attrs):
-        return True
-    mime = (getattr(doc, "mime_type", "") or "").lower()
-    return mime in ("video/mp4", "image/gif")
 
 
 @bot.on(events.NewMessage(func=is_welcome_media_message))
