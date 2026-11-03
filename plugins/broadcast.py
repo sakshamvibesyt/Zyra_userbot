@@ -16,15 +16,33 @@ URL_RE = re.compile(r"^\s*(.{1,64}?)\s*-\s*(https?://\S+)\s*$", re.I)
 
 
 def _parse_caption_and_buttons(raw):
-    """Return (caption_override, button_rows); None caption means use source text."""
+    """Parse caption and URL buttons from `caption || LABEL - URL; LABEL - URL`.
+
+    Button definitions may be separated by semicolons or newlines. Also accepts
+    hyphen/en-dash/em-dash between label and URL.
+    """
     if "||" not in raw:
         return raw.strip() or None, None
+
     caption, raw_buttons = raw.split("||", 1)
     buttons = []
-    for item in raw_buttons.split(";"):
-        match = URL_RE.match(item)
-        if match:
-            buttons.append(Button.url(match.group(1).strip(), match.group(2).strip()))
+    # A semicolon is the primary separator; newline also works for copy/pasted commands.
+    items = re.split(r"[;\n]+", raw_buttons)
+    for item in items:
+        item = item.strip()
+        match = re.match(
+            r"^(.{1,64}?)\s*[-–—]\s*(https?://\S+)\s*$",
+            item,
+            re.I,
+        )
+        if not match:
+            continue
+        label = match.group(1).strip()
+        url = match.group(2).strip().rstrip(",")
+        if label and url.startswith(("https://", "http://")):
+            buttons.append(Button.url(label, url))
+
+    # Telethon expects rows: [[button1, button2], [button3]].
     return caption.strip(), ([buttons] if buttons else None)
 
 
@@ -111,7 +129,7 @@ def setup(client):
             return await reply(e, "ℹ️ Koi opted-in destination nahi hai. Group mein <code>.broadcast here</code> use karo ya users se DM mein <code>.broadcast subscribe</code> karwao.")
 
         running["stop"] = False
-        status = await reply(e, "🚀 <b>Broadcast start ho gaya!</b>\n🖼️ Photo/media + caption + URL buttons (agar diye)\n📬 Destinations: <code>%s</code>\n🛑 Stop: <code>.broadcast stop</code>" % len(destinations))
+        status = await reply(e, "🚀 <b>Broadcast start ho gaya!</b>\n🖼️ Photo/media + caption\n🔘 URL buttons parsed: <code>%s</code>\n📬 Destinations: <code>%s</code>\n🛑 Stop: <code>.broadcast stop</code>" % (sum(len(row) for row in (buttons or [])), len(destinations)))
 
         async def deliver():
             sent, failed, stopped = 0, 0, False
