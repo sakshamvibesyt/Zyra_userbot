@@ -1,4 +1,4 @@
-import asyncio, logging, os, time, random, re, ast
+import asyncio, logging, os, time, random, re, ast, html
 import aiohttp
 
 from aiohttp import web
@@ -127,18 +127,26 @@ async def start_web():
     log.info("listening on %s", PORT)
 
 
-WELCOME_TEXT = (
-    "<b>✦ 𝐙𝐘𝐑𝐀 𝐔𝐒𝐄𝐑𝐁𝐎𝐓 ✦</b>\n"
-    "<i>Personal Telegram workspace</i>\n\n"
-    "╭─── ⟡ <b>WELCOME</b> ⟡ ───╮\n"
-    "│  Your tools. Your settings. Your control.\n"
-    "╰────────────────────╯\n\n"
-    "▸ Add your own Telegram account to get started.\n"
-    "▸ Manage commands and plugins from one place.\n"
-    "▸ Use /help to explore available controls.\n\n"
-    "<i>Keep your OTP and 2-step verification password private. "
-    "Only connect an account you own.</i>"
-)
+def build_welcome_text(user_name="there"):
+    """Create a short personalized preview with Telegram's expandable details."""
+    safe_name = html.escape((user_name or "there").strip())
+    return (
+        f"<b>✦ 𝐙𝐘𝐑𝐀 𝐔𝐒𝐄𝐑𝐁𝐎𝐓 ✦</b>\n"
+        f"💜 <b>Welcome, {safe_name}!</b>\n"
+        "<i>Your personal Telegram workspace is ready.</i>\n\n"
+        "<blockquote expandable>"
+        "╭─── ⟡ <b>QUICK START</b> ⟡ ───╮\n"
+        "✦ Add your Telegram account using <b>ADD ACCOUNT</b>.\n"
+        "✦ Open <b>HELP CENTER</b> to explore commands and tools.\n"
+        "✦ Use the buttons below to navigate Zyra.\n"
+        "╰────────────────────╯\n\n"
+        "<b>Features</b>\n"
+        "▸ Account & session management\n"
+        "▸ Text utilities and personal tools\n"
+        "▸ Help, settings and plugin controls\n\n"
+        "<i>Security note: never share your Telegram login code or 2-step verification password. Connect only accounts you own.</i>"
+        "</blockquote>"
+    )
 
 HELP_TEXT = (
     "<b>✦ 𝐙𝐘𝐑𝐀 • 𝐇𝐄𝐋𝐏 𝐂𝐄𝐍𝐓𝐄𝐑 ✦</b>\n"
@@ -256,6 +264,14 @@ def section_buttons():
 
 
 async def send_start_menu(chat_id, reply_to=None):
+    # Personalize the visible welcome line with the Telegram user's first name.
+    try:
+        user = await bot.get_entity(chat_id)
+        user_name = getattr(user, "first_name", None) or getattr(user, "title", None) or "there"
+    except Exception:
+        user_name = "there"
+    welcome_text = build_welcome_text(user_name)
+
     # Prefer a sticker message saved through this bot; this works with Telethon
     # and survives redeploys when MongoDB is configured.
     try:
@@ -273,7 +289,7 @@ async def send_start_menu(chat_id, reply_to=None):
     # hidden-link preview technique. Fall back to the local media if preview fails.
     random_video = random.choice(START_VIDEO_URLS) if START_VIDEO_URLS else ""
     if random_video:
-        video_caption = f'<a href="{random_video}">&#8203;</a>' + WELCOME_TEXT
+        video_caption = f'<a href="{random_video}">&#8203;</a>' + welcome_text
         try:
             await bot.send_message(
                 chat_id,
@@ -292,14 +308,14 @@ async def send_start_menu(chat_id, reply_to=None):
         await bot.send_file(
             chat_id,
             media_path,
-            caption=WELCOME_TEXT,
+            caption=welcome_text,
             buttons=start_buttons(),
             parse_mode="html",
             reply_to=reply_to,
         )
     except Exception as ex:
         log.warning("welcome media could not be sent; using text fallback: %s", ex)
-        await bot.send_message(chat_id, WELCOME_TEXT, buttons=start_buttons(), parse_mode="html", reply_to=reply_to)
+        await bot.send_message(chat_id, welcome_text, buttons=start_buttons(), parse_mode="html", reply_to=reply_to)
 
 
 
