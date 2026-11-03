@@ -1,8 +1,9 @@
-"""Authorized profile template apply/restore commands for Zyra Userbot.
+"""MyTron-style profile clone/revert commands adapted for Zyra's Telethon client.
 
-For privacy and anti-impersonation, only usernames explicitly listed in
-CLONE_ALLOWED_USERNAMES may be used as profile sources.
+Usage: reply to a user's message with .clone, or use .clone @username.
+Only use profile copying with the person's permission; do not impersonate others.
 """
+import html
 import os
 import re
 import tempfile
@@ -15,22 +16,17 @@ def setup(client):
     p = re.escape(client.prefix)
     uid = client.uid
     backups = database.db.zyra_profile_backups
-    allowed = {
-        x.strip().lstrip('@').casefold()
-        for x in os.environ.get('CLONE_ALLOWED_USERNAMES', '').split(',')
-        if x.strip()
-    }
 
     async def get_about(entity):
         full = await client(functions.users.GetFullUserRequest(id=entity))
         return getattr(full.full_user, 'about', '') or ''
 
-    async def photo_bytes(entity):
+    async def download_photo(photo):
         path = None
         try:
             with tempfile.NamedTemporaryFile(prefix='zyra_profile_', suffix='.jpg', delete=False) as f:
                 path = f.name
-            result = await client.download_profile_photo(entity, file=path)
+            result = await client.download_media(photo, file=path)
             if not result or not os.path.exists(path) or os.path.getsize(path) == 0:
                 return None
             with open(path, 'rb') as f:
@@ -42,86 +38,111 @@ def setup(client):
                 except OSError:
                     pass
 
-    async def apply_photo(data):
-        if not data:
-            # Remove the current profile photo when the saved original had none.
-            photos = await client.get_profile_photos('me', limit=1)
-            if photos:
-                await client(functions.photos.DeletePhotosRequest(id=[utils.get_input_photo(photos[0])]))
-            return
-        path = None
-        try:
-            with tempfile.NamedTemporaryFile(prefix='zyra_profile_upload_', suffix='.jpg', delete=False) as f:
-                f.write(data)
-                path = f.name
-            uploaded = await client.upload_file(path)
-            await client(functions.photos.UploadProfilePhotoRequest(file=uploaded))
-        finally:
-            if path and os.path.exists(path):
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
+    async def get_photos(entity, limit=5):
+        photos = await client.get_profile_photos(entity, limit=limit)
+        output = []
+        # Telegram returns newest first; reverse to upload oldest-to-newest like MyTron.
+        for photo in reversed(list(photos)):
+            data = await download_photo(photo)
+            if data:
+                output.append(data)
+        return output
 
-    @client.on(events.NewMessage(pattern=r'^' + p + r'clone\s+@?([A-Za-z0-9_]{5,32})\s*$', outgoing=True))
+    async def clear_photos():
+        photos = await client.get_profile_photos('me', limit=100)
+        if photos:
+            await client(functions.photos.DeletePhotosRequest(
+                id=[utils.get_input_photo(photo) for photo in photos]
+            ))
+
+    async def set_photos(photo_data):
+        await clear_photos()
+        for data in photo_data or []:
+            path = None
+            try:
+                with tempfile.NamedTemporaryFile(prefix='zyra_profile_upload_', suffix='.jpg', delete=False) as f:
+                    f.write(data)
+                    path = f.name
+                uploaded = await client.upload_file(path)
+                await client(functions.photos.UploadProfilePhotoRequest(file=uploaded))
+            finally:
+                if path and os.path.exists(path):
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+
+    async def save_original_once(me):
+        existing = await backups.find_one({'uid': uid, 'had_backup': True})
+        if existing:
+            return
+        await backups.insert_one({
+            'uid': uid,
+            'first_name': me.first_name or '',
+            'last_name': me.last_name or '',
+            'about': await get_about(me),
+            'photos': await get_photos('me', limit=5),
+            'had_backup': True,
+        })
+
+    @client.on(events.NewMessage(pattern=r'^' + p + r'clone(?:\s+@?([A-Za-z0-9_]{5,32}))?\s*$', outgoing=True))
     async def clone_profile(e):
-        username = e.pattern_match.group(1).casefold()
-        if username not in allowed:
-            return await e.edit(
-                '<b>Profile source not allowed.</b>\n'
-                'Sirf apni ya permission wali profile use karo. Authorized username ko '
-                '<code>CLONE_ALLOWED_USERNAMES</code> environment variable mein add karo '
-                '(comma-separated), phir redeploy karo.'
-            )
+        username = e.pattern_match.group(1)
         try:
-            target = await client.get_entity(username)
+            if username:
+                target = await client.get_entity(username)
+            elif e.is_reply:
+                replied = await e.get_reply_message()
+                if not replied or not replied.sender_id:
+                    return await e.edit('Jis user ka profile clone karna hai, uske message par reply karke <code>.clone</code> bhejo.')
+                target = await replied.get_sender()
+            else:
+                return await e.edit('Kisi user ke message par reply karke <code>.clone</code> bhejo, ya <code>.clone @username</code> use karo.')
+
             me = await client.get_me()
-            current_about = await get_about(me)
-            current_photo = await photo_bytes(me)
-            # Save the original profile only once, so repeated .clone calls do not
-            # overwrite the profile that .reclone is supposed to restore.
-            await backups.update_one(
-                {'uid': uid},
-                {'$setOnInsert': {
-                    'first_name': me.first_name or '',
-                    'last_name': me.last_name or '',
-                    'about': current_about,
-                    'photo': current_photo,
-                    'had_backup': True,
-                }},
-                upsert=True,
-            )
-            target_photo = await photo_bytes(target)
+            if target.id == me.id:
+                return await e.edit('Ye tumhara hi profile hai. Kisi doosre authorized profile ko select karo.')
+
+            await e.edit('✦ <b>Profile clone ho raha hai...</b>')
+            await save_original_once(me)
+            target_photos = await get_photos(target, limit=5)
+            target_about = await get_about(target)
+
             await client(functions.account.UpdateProfileRequest(
                 first_name=(getattr(target, 'first_name', None) or ' '),
                 last_name=(getattr(target, 'last_name', None) or ''),
-                about=await get_about(target),
+                about=target_about,
             ))
-            if target_photo:
-                await apply_photo(target_photo)
-            else:
-                await apply_photo(None)
+            await set_photos(target_photos)
             await e.edit(
-                '<b>✦ Profile template applied</b>\n'
-                'Name, bio aur photo update kar diye gaye.\n'
-                '<code>.reclone</code> se saved original profile restore kar sakte ho.'
+                '✦ <b>Profile clone complete!</b>\n'
+                'Name, bio aur available profile photos apply ho gaye.\n'
+                'Original profile ke liye <code>.reclone</code> ya <code>.revert</code> use karo.\n\n'
+                '<i>Sirf permission ke saath use karo; kisi ki identity ban kar mislead mat karo.</i>'
             )
         except Exception as ex:
-            await e.edit('Profile apply nahi hua: <code>%s</code>' % str(ex).replace('<', '&lt;').replace('>', '&gt;')[:180])
+            msg = html.escape(str(ex))[:180]
+            await e.edit('Profile clone nahi hua: <code>%s</code>' % msg)
 
-    @client.on(events.NewMessage(pattern=r'^' + p + r'reclone$', outgoing=True))
+    @client.on(events.NewMessage(pattern=r'^' + p + r'(?:reclone|revert)\s*$', outgoing=True))
     async def restore_profile(e):
         backup = await backups.find_one({'uid': uid, 'had_backup': True})
         if not backup:
-            return await e.edit('Original profile ka backup nahi mila. Pehle authorized <code>.clone @username</code> use karo.')
+            return await e.edit('Original profile ka backup nahi mila. Pehle <code>.clone</code> use karo.')
         try:
+            await e.edit('✦ <b>Original profile restore ho raha hai...</b>')
             await client(functions.account.UpdateProfileRequest(
                 first_name=backup.get('first_name') or ' ',
                 last_name=backup.get('last_name') or '',
                 about=backup.get('about') or '',
             ))
-            await apply_photo(backup.get('photo'))
-            await backups.delete_one({'uid': uid})
-            await e.edit('<b>✓ Original profile restored.</b> Name, bio aur photo wapas aa gaye.')
+            photos = backup.get('photos')
+            if photos is None:  # support backups created by the older Zyra plugin
+                old_photo = backup.get('photo')
+                photos = [old_photo] if old_photo else []
+            await set_photos(photos)
+            await backups.delete_one({'_id': backup['_id']})
+            await e.edit('✓ <b>Original profile restored.</b> Name, bio aur saved photos wapas aa gaye.')
         except Exception as ex:
-            await e.edit('Restore nahi hua: <code>%s</code>' % str(ex).replace('<', '&lt;').replace('>', '&gt;')[:180])
+            msg = html.escape(str(ex))[:180]
+            await e.edit('Restore nahi hua: <code>%s</code>' % msg)

@@ -1,6 +1,7 @@
 """Safe utility, notes, AFK and auto-reply commands for Zyra Userbot."""
 import ast
 import asyncio
+import html
 import operator
 import random
 import re
@@ -48,6 +49,8 @@ def setup(client):
     notes = database.db.zyra_notes
     replies = database.db.zyra_replies
     filters = database.db.zyra_filters
+    afk_settings = database.db.zyra_afk_settings
+    afk_states = database.db.zyra_afk_states
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"help$", outgoing=True))
     async def help_cmd(e):
@@ -60,8 +63,8 @@ def setup(client):
             f"<code>{prefix}ping</code> · response speed\n"
             f"<code>{prefix}alive</code> · account status\n"
             f"<code>{prefix}help</code> · this menu\n"
-            f"<code>{prefix}clone @username</code> · apply authorized profile template\n"
-            f"<code>{prefix}reclone</code> · restore original profile\n\n"
+            f"Reply to a user: <code>{prefix}clone</code> · or <code>{prefix}clone @username</code>\n"
+            f"<code>{prefix}reclone</code> / <code>{prefix}revert</code> · restore original profile\n\n"
             "<b>✧ TEXT & UTILITIES</b>\n"
             f"<code>{prefix}echo text</code> · repeat text\n"
             f"<code>{prefix}calc 2+2</code> · calculate\n"
@@ -71,8 +74,11 @@ def setup(client):
             f"<code>{prefix}spoiler text</code> · spoiler format\n"
             f"<code>{prefix}type text</code> · typewriter effect\n\n"
             "<b>☾ AFK, NOTES & AUTOMATION</b>\n"
-            f"<code>{prefix}afk reason</code> · set AFK\n"
+            f"<code>{prefix}afk [message]</code> · enable AFK with any custom message\n"
+            f"<code>{prefix}afkmsg message</code> · save default AFK message\n"
+            f"<code>{prefix}afkmsg</code> · view saved AFK message\n"
             f"<code>{prefix}unafk</code> · clear AFK\n"
+            f"<code>{prefix}promo on/off/status</code> · toggle auto-promo\n"
             f"<code>{prefix}note name | text</code> · save note\n"
             f"<code>{prefix}getnote name</code> · read note\n"
             f"<code>{prefix}delnote name</code> · delete note\n"
@@ -156,28 +162,75 @@ def setup(client):
             except Exception:
                 pass
 
-    @client.on(events.NewMessage(pattern=r"^" + p + r"afk(?:\s+(.+))?$", outgoing=True))
+    async def load_afk_state():
+        """Load persistent AFK state so it survives a worker restart."""
+        if uid in _AFK:
+            return _AFK[uid]
+        doc = await afk_states.find_one({"uid": uid})
+        if doc and doc.get("active"):
+            _AFK[uid] = {"message": doc.get("message", "I'm currently AFK."), "since": doc.get("since", time.time())}
+        return _AFK.get(uid)
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"afkmsg(?:\s+([\s\S]+))?$", outgoing=True))
+    async def set_afk_message(e):
+        message = e.pattern_match.group(1)
+        if message is None:
+            doc = await afk_settings.find_one({"uid": uid})
+            current = doc.get("message") if doc else "I'm currently AFK. I'll reply when I'm back."
+            return await e.edit("<b>✦ Saved AFK message</b>\n<pre>%s</pre>" % html.escape(current[:3500]))
+        message = message.strip()
+        if not message:
+            return await e.edit("Usage: <code>%safkmsg your custom message</code>" % client.prefix)
+        if len(message) > 3500:
+            return await e.edit("AFK message is too long. Maximum: 3500 characters.")
+        await afk_settings.update_one({"uid": uid}, {"$set": {"message": message}}, upsert=True)
+        await e.edit("🎀 <b>Custom AFK message saved!</b>\nUse <code>%safk</code> to activate it." % client.prefix)
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"afk(?:\s+([\s\S]+))?$", outgoing=True))
     async def afk(e):
-        reason = (e.pattern_match.group(1) or "Away").strip()[:200]
-        _AFK[uid] = {"reason": reason, "since": time.time()}
-        await e.edit("AFK enabled: <b>%s</b>" % reason)
+        custom = e.pattern_match.group(1)
+        if custom and custom.strip():
+            message = custom.strip()
+        else:
+            doc = await afk_settings.find_one({"uid": uid})
+            message = doc.get("message") if doc else "I'm currently AFK. I'll reply when I'm back."
+        if len(message) > 3500:
+            return await e.edit("AFK message is too long. Maximum: 3500 characters.")
+        since = time.time()
+        _AFK[uid] = {"message": message, "since": since}
+        await afk_states.update_one({"uid": uid}, {"$set": {"active": True, "message": message, "since": since}}, upsert=True)
+        await e.edit("🎀 <b>AFK enabled</b>\nYour custom message will be sent when someone messages you or mentions you.")
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"unafk$", outgoing=True))
     async def unafk(e):
-        old = _AFK.pop(uid, None)
+        old = await load_afk_state()
+        _AFK.pop(uid, None)
+        await afk_states.update_one({"uid": uid}, {"$set": {"active": False}}, upsert=True)
         if old:
-            await e.edit("Welcome back! AFK was on for %d seconds." % int(time.time() - old["since"]))
+            await e.edit("✨ <b>Welcome back!</b> AFK was on for %d seconds." % int(time.time() - old["since"]))
         else:
             await e.edit("AFK was not enabled.")
+
+    @client.on(events.NewMessage(outgoing=True))
+    async def clear_afk_on_activity(e):
+        # A normal outgoing message means the user is back. Don't clear AFK for commands.
+        text = (e.raw_text or "").strip()
+        if not text or text.startswith(client.prefix):
+            return
+        old = await load_afk_state()
+        if old:
+            _AFK.pop(uid, None)
+            await afk_states.update_one({"uid": uid}, {"$set": {"active": False}}, upsert=True)
 
     @client.on(events.NewMessage(incoming=True))
     async def incoming(e):
         if not e.raw_text or getattr(e, "sender_id", None) == client.me_id:
             return
-        afk_data = _AFK.get(uid)
+        afk_data = await load_afk_state()
         if afk_data and e.sender_id and (e.is_private or e.mentioned):
             try:
-                await e.reply("I'm currently AFK: %s" % afk_data["reason"])
+                # Escape user-configured text so any plain text, emoji, symbols, or newlines work safely.
+                await e.reply(html.escape(afk_data["message"]))
             except Exception:
                 pass
         text = e.raw_text.strip()
