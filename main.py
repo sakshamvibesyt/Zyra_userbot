@@ -22,6 +22,7 @@ ADD_TO_GROUP_URL = os.environ.get("ADD_TO_GROUP_URL", "https://t.me/?startgroup=
 START_STICKER_ID = os.environ.get("START_STICKER_ID", "").strip()
 OWNER_ID = int(os.environ.get("OWNER_ID", "0") or 0)
 WELCOME_IMAGE = os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.png")
+WELCOME_ANIMATION = os.environ.get("WELCOME_ANIMATION", os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.mp4")).strip()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("main")
@@ -204,17 +205,19 @@ async def send_start_menu(chat_id, reply_to=None):
             await bot.send_file(chat_id, START_STICKER_ID, reply_to=reply_to)
     except Exception as ex:
         log.warning("start sticker could not be sent; send a sticker directly to this bot to save it: %s", ex)
+    # Use a configured MP4/GIF animation when available; otherwise use the static welcome image.
+    media_path = WELCOME_ANIMATION if WELCOME_ANIMATION and os.path.isfile(WELCOME_ANIMATION) else WELCOME_IMAGE
     try:
         await bot.send_file(
             chat_id,
-            WELCOME_IMAGE,
+            media_path,
             caption=WELCOME_TEXT,
             buttons=start_buttons(),
             parse_mode="html",
             reply_to=reply_to,
         )
     except Exception as ex:
-        log.warning("welcome image could not be sent; using text fallback: %s", ex)
+        log.warning("welcome media could not be sent; using text fallback: %s", ex)
         await bot.send_message(chat_id, WELCOME_TEXT, buttons=start_buttons(), parse_mode="html", reply_to=reply_to)
 
 
@@ -232,7 +235,22 @@ async def cmd_start(e):
     await send_start_menu(e.chat_id)
 
 
-@bot.on(events.NewMessage(func=lambda e: e.is_private and bool(e.message and e.message.document) and any(isinstance(a, types.DocumentAttributeSticker) for a in e.message.document.attributes)))
+def is_welcome_media_message(e):
+    """Accept static/animated stickers, GIFs, and short videos sent to the panel bot."""
+    msg = getattr(e, "message", None)
+    if not e.is_private or not msg or not msg.media:
+        return False
+    doc = getattr(msg, "document", None)
+    if not doc:
+        return False
+    attrs = getattr(doc, "attributes", []) or []
+    if any(isinstance(a, (types.DocumentAttributeSticker, types.DocumentAttributeAnimated)) for a in attrs):
+        return True
+    mime = (getattr(doc, "mime_type", "") or "").lower()
+    return mime in ("video/mp4", "image/gif")
+
+
+@bot.on(events.NewMessage(func=is_welcome_media_message))
 async def sticker_id_helper(e):
     if not await require_panel_access(e):
         return
@@ -245,9 +263,9 @@ async def sticker_id_helper(e):
             upsert=True,
         )
         await e.reply(
-            "🩵 <b>Zyra welcome sticker saved!</b>\n"
-            "Ab /start par ye sticker welcome image se pehle aayega.\n"
-            "MongoDB enabled rehna chahiye taaki setting redeploy ke baad bhi rahe.",
+            "🩵 <b>Zyra welcome media saved!</b>\n"
+            "Ab /start par ye sticker/GIF/video welcome image se pehle aayega.\n"
+            "Tip: animated welcome ke liye GIF ya short MP4 bhejo. MongoDB setting ko redeploy ke baad bhi save rakhega.",
             parse_mode="html",
         )
     except Exception as ex:
