@@ -228,7 +228,7 @@ async def cmd_start(e):
         await bot(functions.messages.SendReactionRequest(
             peer=e.peer_id,
             msg_id=e.id,
-            reaction=[types.ReactionEmoji(emoticon="🐴")],
+            reaction=[types.ReactionEmoji(emoticon="❤️")],
         ))
     except Exception as ex:
         log.warning("Start reaction failed (Telegram may not allow this chat/reaction): %s", ex)
