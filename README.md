@@ -115,3 +115,20 @@ Telegram does not provide a reliable signal that your separate Telegram app was 
 ## Feature scope
 
 Zyra includes modular plugins, AI (when configured), notes, AFK, auto-replies, profile template backup/restore, and permission-based group moderation. It intentionally does not implement raid/spam automation, mass-add/promote automation, or hidden engagement/view manipulation.
+
+
+## Opt-in broadcast
+
+The `plugins/broadcast.py` plugin sends a replied-to text/photo/media only to destinations that explicitly opted in. It does not message every group or every DM automatically.
+
+- In each group you want to include, send `.broadcast here` from the connected account. Use `.broadcast leave` there to remove it.
+- A person can DM the connected account `.broadcast subscribe`; they can send `.broadcast unsubscribe` at any time.
+- For a photo + caption + URL button, send the photo first, then reply to it with: `.broadcast Your caption || Button label - https://t.me/yourlink`
+- Add multiple URL buttons by separating them with semicolons: `.broadcast Caption || OWNER - https://t.me/owner; ABOUT - https://t.me/about`
+- To copy a source message's existing URL buttons, reply to that message and send `.broadcast` with no extra text.
+- `.broadcast status` shows destination counts; `.broadcast stop` requests cancellation.
+
+Note: Telegram permissions and client/account limitations can prevent inline buttons from being sent by a user account. Test with one opted-in destination first. This feature only targets subscribed DMs and groups that were explicitly added.
+- The sender waits between destinations and respects Telegram FloodWait responses. Delivery can still fail due to permissions, blocks, or Telegram limits.
+
+Keep existing Render environment variables unchanged. The plugin uses the project's existing MongoDB connection.

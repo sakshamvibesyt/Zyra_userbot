@@ -80,6 +80,7 @@ HELP_TEXT = (
     "<i>Your Telegram workspace, neatly organized.</i>\n\n"
     "Choose a section below to explore commands.\n\n"
     "<b>ACCOUNT</b>\n"
+    "<code>/panel</code> · open control panel\n"
     "<code>/login</code> · connect an account\n"
     "<code>/status</code> · connection status\n"
     "<code>/logout</code> · disconnect account\n"
@@ -99,6 +100,7 @@ HELP_SECTIONS = {
     b"help_account": (
         "<b>♙ ACCOUNT & SETTINGS</b>\n\n"
         "<code>/start</code> — welcome menu\n"
+        "<code>/panel</code> — open control panel (owner/admin)\n"
         "<code>/login</code> — connect your own Telegram account\n"
         "<code>/status</code> — show saved account and online status\n"
         "<code>/logout</code> — disconnect and remove saved session\n"
@@ -352,6 +354,15 @@ async def cmd_login(e):
     if not await require_panel_access(e):
         return
     await start_login(e.sender_id, e)
+
+
+@bot.on(events.NewMessage(pattern=r"^/panel$"))
+async def cmd_panel(e):
+    if not await require_panel_access(e):
+        return
+    if not e.is_private:
+        return await e.reply("🔒 /panel ko bot ke private chat mein use karein.")
+    await send_start_menu(e.chat_id)
 
 
 @bot.on(events.NewMessage(pattern=r"^/help$"))
