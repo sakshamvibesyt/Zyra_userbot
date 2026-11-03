@@ -44,7 +44,9 @@ The `extras` plugin adds these commands to each connected user account (default 
 - `.alive` — check userbot status
 - `.echo <text>`, `.type <text>`, `.calc <expression>`
 - `.reverse <text>`, `.clap <text>`, `.emojify <text>`, `.spoiler <text>`
-- `.afk [reason]`, `.unafk` — temporary AFK status (resets after worker restart)
+- `.afk [message]`, `.unafk` — custom AFK message; state survives worker restarts
+- `.afkmsg <message>` — save any plain-text/emoji/multiline default AFK reply; `.afkmsg` displays it
+- AFK clears automatically when you send a normal outgoing message (commands do not clear it)
 - `.note <name> | <content>`, `.getnote <name>`, `.delnote <name>`, `.notes`
 - `.autoreply <trigger> | <response>`, `.delreply <trigger>`, `.replies`
 - `.filter <trigger> | <response>`, `.stop <trigger>`, `.filters`
@@ -76,7 +78,40 @@ Please deploy and test all Telegram callbacks on your own bot; platform permissi
 
 ## Profile template commands
 
-- `.clone @username` applies the name, bio and profile photo from an authorized profile source.
-- `.reclone` restores the profile snapshot saved before the first clone.
-- Set `CLONE_ALLOWED_USERNAMES` to a comma-separated list of usernames you own or have explicit permission to use. The plugin refuses other usernames.
+- Reply to a user message with `.clone`, or use `.clone @username`, to copy the name, bio and up to five available profile photos.
+- `.reclone` or `.revert` restores the original profile snapshot saved before the first clone.
+- Use profile copying only with the person’s permission; do not impersonate or mislead others.
 - MongoDB is used to store the original profile snapshot; keep `MONGO_URL` private.
+
+
+## Custom AFK behavior
+
+- `.afkmsg I'm away right now ✨` saves a default message. Newlines, emoji, symbols, and long plain-text messages are supported up to 3500 characters.
+- `.afk optional one-time message` activates AFK with that message instead of the saved default.
+- `.afk` activates the saved default; `.unafk` disables it.
+- AFK state and the saved message are stored in MongoDB, so they survive a worker restart. AFK replies are sent in private chats or when someone mentions the account in a group.
+- Telegram does not provide a dependable event telling a userbot that the owner merely closed their separate Telegram app or became “offline”. This implementation therefore clears AFK on the next normal outgoing message rather than claiming to detect app presence.
+
+
+## Trusted panel admins
+
+Set `OWNER_ID` in Render to your own numeric Telegram user ID. Only this ID can add/remove panel admins.
+
+- `/addadmin 123456789` — owner-only, add a trusted admin by numeric Telegram user ID.
+- `/removeadmin 123456789` — owner-only, remove an admin.
+- `/admins` — list trusted admins.
+
+Admin IDs are stored in MongoDB. Admins can use the control-panel commands for their own Telegram account and the userbot tools on their own connected account. This does not hand an admin your personal Telegram session. Keep `OWNER_ID` private and do not share OTPs, 2FA passwords, or session strings.
+
+## AFK and profile template
+
+- `.afk your custom message` — activate AFK with arbitrary text, emoji, symbols, or multiple lines.
+- `.afkmsg your default message` — save a default message; `.afkmsg` shows it.
+- `.unafk` — clear AFK.
+- `.clone` works by replying to a user message; `.clone @username` works by username. `.reclone` and `.revert` restore the saved original profile. Use only with permission.
+
+Telegram does not provide a reliable signal that your separate Telegram app was closed, so AFK cannot safely auto-enable solely when you close the app. It clears when you send a normal outgoing message.
+
+## Feature scope
+
+Zyra includes modular plugins, AI (when configured), notes, AFK, auto-replies, profile template backup/restore, and permission-based group moderation. It intentionally does not implement raid/spam automation, mass-add/promote automation, or hidden engagement/view manipulation.

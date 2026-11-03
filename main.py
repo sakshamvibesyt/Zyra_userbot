@@ -20,6 +20,7 @@ OWNER_URL = os.environ.get("OWNER_URL", "https://t.me/Sakshamvenus")
 SUPPORT_URL = os.environ.get("SUPPORT_URL", "https://t.me/Sakshamabout_bot")
 ADD_TO_GROUP_URL = os.environ.get("ADD_TO_GROUP_URL", "https://t.me/?startgroup=true")
 START_STICKER_ID = os.environ.get("START_STICKER_ID", "").strip()
+OWNER_ID = int(os.environ.get("OWNER_ID", "0") or 0)
 WELCOME_IMAGE = os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.png")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -27,6 +28,24 @@ log = logging.getLogger("main")
 
 bot = TelegramClient("master", API_ID, API_HASH)
 states = {}
+
+# Control-panel access is separate from the connected user accounts.
+# OWNER_ID must be set explicitly in Render environment variables.
+admins = db.db.zyra_panel_admins
+
+async def is_owner(uid):
+    return bool(OWNER_ID and uid == OWNER_ID)
+
+async def is_panel_admin(uid):
+    if await is_owner(uid):
+        return True
+    return bool(await admins.find_one({"_id": int(uid)}))
+
+async def require_panel_access(event):
+    if not await is_panel_admin(event.sender_id):
+        await event.reply("🔒 <b>Zyra access denied.</b> Sirf owner ya approved admin ye command use kar sakta hai.", parse_mode="html")
+        return False
+    return True
 
 
 async def health(request):
@@ -69,7 +88,11 @@ HELP_TEXT = (
     "Use your prefix (default <code>.</code>) in Telegram.\n"
     "<code>.help</code> · full userbot command list\n"
     "<code>.plugins</code> is available in the bot menu as <code>/plugins</code>.\n\n"
-    "<i>Tap a category below for examples and usage.</i>"
+    "<i>Tap a category below for examples and usage.</i>\n\n"
+    "<b>OWNER PANEL</b>\n<code>/addadmin user_id</code> · add trusted admin (owner only)\n"
+    "<code>/removeadmin user_id</code> · remove trusted admin (owner only)\n"
+    "<code>/admins</code> · list panel admins\n"
+    "<code>/myid</code> · show your Telegram numeric ID"
 )
 
 HELP_SECTIONS = {
@@ -81,7 +104,10 @@ HELP_SECTIONS = {
         "<code>/logout</code> — disconnect and remove saved session\n"
         "<code>/prefix .</code> — change userbot command prefix\n"
         "<code>/plugins</code> — enable/disable installed plugins\n"
-        "<code>/cancel</code> — cancel an in-progress login\n\n"
+        "<code>/cancel</code> — cancel an in-progress login\n"
+        "<code>/addadmin user_id</code> — owner-only: add trusted panel admin\n"
+        "<code>/removeadmin user_id</code> — owner-only: remove panel admin\n"
+        "<code>/admins</code> — list panel admins\n\n"
         "<i>Only connect accounts you own. Keep OTP and 2-step password private.</i>"
     ),
     b"help_tools": (
@@ -192,6 +218,7 @@ async def send_start_menu(chat_id, reply_to=None):
 
 @bot.on(events.NewMessage(pattern=r"^/start$"))
 async def cmd_start(e):
+    log.info("/start received user_id=%s", e.sender_id)
     try:
         await bot(functions.messages.SendReactionRequest(
             peer=e.peer_id,
@@ -205,6 +232,8 @@ async def cmd_start(e):
 
 @bot.on(events.NewMessage(func=lambda e: e.is_private and bool(e.message and e.message.document) and any(isinstance(a, types.DocumentAttributeSticker) for a in e.message.document.attributes)))
 async def sticker_id_helper(e):
+    if not await require_panel_access(e):
+        return
     # Save the source message reference in MongoDB; Telethon uses MTProto media,
     # not Bot API file_id strings from third-party ID bots.
     try:
@@ -296,6 +325,8 @@ async def start_login(uid, event):
 
 @bot.on(events.NewMessage(pattern=r"^/cancel$"))
 async def cmd_cancel_login(e):
+    if not await require_panel_access(e):
+        return
     uid = e.sender_id
     st = states.pop(uid, None)
     if st and st.get("client"):
@@ -308,6 +339,8 @@ async def cmd_cancel_login(e):
 
 @bot.on(events.CallbackQuery(data=b"login"))
 async def cb_login(e):
+    if not await is_panel_admin(e.sender_id):
+        return await e.answer("Owner/admin access required", alert=True)
     await e.answer()
     await start_login(e.sender_id, e)
 
@@ -316,6 +349,8 @@ async def cb_login(e):
 
 @bot.on(events.NewMessage(pattern=r"^/login$"))
 async def cmd_login(e):
+    if not await require_panel_access(e):
+        return
     await start_login(e.sender_id, e)
 
 
@@ -326,6 +361,8 @@ async def cmd_help(e):
 
 @bot.on(events.NewMessage(pattern=r"^/logout$"))
 async def cmd_logout(e):
+    if not await require_panel_access(e):
+        return
     uid = e.sender_id
     await manager.kill(uid)
     await db.users.delete_one({"_id": uid})
@@ -335,6 +372,8 @@ async def cmd_logout(e):
 
 @bot.on(events.NewMessage(pattern=r"^/status$"))
 async def cmd_status(e):
+    if not await require_panel_access(e):
+        return
     uid = e.sender_id
     doc = await db.users.find_one({"_id": uid})
     if not doc:
@@ -353,6 +392,8 @@ async def cmd_status(e):
 
 @bot.on(events.NewMessage(pattern=r"^/prefix(?:\s+(\S+))?$"))
 async def cmd_prefix(e):
+    if not await require_panel_access(e):
+        return
     uid = e.sender_id
     new = e.pattern_match.group(1)
     if not new:
@@ -366,6 +407,8 @@ async def cmd_prefix(e):
 
 @bot.on(events.NewMessage(pattern=r"^/plugins$"))
 async def cmd_plugins(e):
+    if not await require_panel_access(e):
+        return
     import pkgutil, plugins as pkg
     uid = e.sender_id
     doc = await db.users.find_one({"_id": uid})
@@ -381,6 +424,8 @@ async def cmd_plugins(e):
 
 @bot.on(events.CallbackQuery(pattern=rb"^tg:(.+)$"))
 async def cb_toggle(e):
+    if not await is_panel_admin(e.sender_id):
+        return await e.answer("Owner/admin access required", alert=True)
     name = e.pattern_match.group(1).decode()
     uid = e.sender_id
     doc = await db.users.find_one({"_id": uid})
@@ -397,9 +442,49 @@ async def cb_toggle(e):
     await e.answer(name + ": " + ("OFF" if name in disabled else "ON"))
 
 
+@bot.on(events.NewMessage(pattern=r"^/myid$"))
+async def cmd_myid(e):
+    await e.reply("Your Telegram user ID: <code>%s</code>" % e.sender_id, parse_mode="html")
+
+
+@bot.on(events.NewMessage(pattern=r"^/addadmin\s+(\d+)$"))
+async def cmd_addadmin(e):
+    if not await is_owner(e.sender_id):
+        return await e.reply("🔒 Sirf configured owner admin add kar sakta hai.")
+    target = int(e.pattern_match.group(1))
+    if OWNER_ID and target == OWNER_ID:
+        return await e.reply("Owner already has full access.")
+    await admins.update_one({"_id": target}, {"$set": {"added_by": e.sender_id, "created_at": int(time.time())}}, upsert=True)
+    log.info("panel admin added by owner_id=%s target_id=%s", e.sender_id, target)
+    await e.reply("✅ Trusted admin add ho gaya: <code>%s</code>\nAb woh panel commands aur apne connected account ke tools use kar sakta hai." % target, parse_mode="html")
+
+
+@bot.on(events.NewMessage(pattern=r"^/removeadmin\s+(\d+)$"))
+async def cmd_removeadmin(e):
+    if not await is_owner(e.sender_id):
+        return await e.reply("🔒 Sirf configured owner admin remove kar sakta hai.")
+    target = int(e.pattern_match.group(1))
+    result = await admins.delete_one({"_id": target})
+    log.info("panel admin removed by owner_id=%s target_id=%s", e.sender_id, target)
+    await e.reply("✅ Admin remove kar diya." if result.deleted_count else "Ye ID admin list mein nahi thi.")
+
+
+@bot.on(events.NewMessage(pattern=r"^/admins$"))
+async def cmd_list_admins(e):
+    if not await require_panel_access(e):
+        return
+    rows = await admins.find({}).to_list(length=100)
+    lines = ["• <code>%s</code>" % row["_id"] for row in rows]
+    if OWNER_ID:
+        lines.insert(0, "• <code>%s</code> — OWNER" % OWNER_ID)
+    await e.reply("<b>✦ ZYRA TRUSTED ADMINS</b>\n\n" + ("\n".join(lines) if lines else "No extra admins added."), parse_mode="html")
+
+
 @bot.on(events.NewMessage())
 async def router(e):
     uid = e.sender_id
+    if not await is_panel_admin(uid):
+        return
     st = states.get(uid)
     if not st or not e.raw_text or e.raw_text.startswith("/"):
         return
