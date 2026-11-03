@@ -1,4 +1,5 @@
-import asyncio, logging, os, time, random
+import asyncio, logging, os, time, random, re, ast
+import aiohttp
 
 from aiohttp import web
 from telethon import TelegramClient, events, Button, functions, types
@@ -39,6 +40,53 @@ START_VIDEO_URLS = [
     "https://yukiapi.site/file/ns7QmFhQ",
     "https://yukiapi.site/file/tZCMxz2a",
 ]
+
+# Auto-sync the START_IMG_URL list from KITTUBOT's GitHub config.
+# The built-in URLs above remain a fallback if GitHub is unavailable.
+KITTU_CONFIG_URL = os.environ.get(
+    "KITTU_CONFIG_URL",
+    "https://raw.githubusercontent.com/sakshamvibesyt/Sem_KITTUBOT/main/KITTUBOT/config.py",
+).strip()
+VIDEO_URL_REFRESH_SECONDS = max(
+    300, int(os.environ.get("VIDEO_URL_REFRESH_SECONDS", "900") or 900)
+)
+
+
+async def refresh_start_video_urls():
+    global START_VIDEO_URLS
+    try:
+        timeout = aiohttp.ClientTimeout(total=12)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(KITTU_CONFIG_URL) as response:
+                response.raise_for_status()
+                source = await response.text()
+        match = re.search(
+            r"START_IMG_URL\s*:[^=]*=\s*(\[[\s\S]*?\])",
+            source,
+        )
+        if not match:
+            raise ValueError("START_IMG_URL list was not found in KITTUBOT config")
+        urls = ast.literal_eval(match.group(1))
+        urls = [
+            url.strip() for url in urls
+            if isinstance(url, str) and url.strip().startswith(("https://", "http://"))
+        ]
+        if not urls:
+            raise ValueError("KITTUBOT config returned an empty video URL list")
+        START_VIDEO_URLS = urls
+        log.info("Synced %s start video URLs from KITTUBOT GitHub config", len(urls))
+    except Exception as ex:
+        log.warning(
+            "Could not refresh KITTUBOT video URLs; keeping %s fallback URLs: %s",
+            len(START_VIDEO_URLS), ex,
+        )
+
+
+async def refresh_video_urls_periodically():
+    while True:
+        await asyncio.sleep(VIDEO_URL_REFRESH_SECONDS)
+        await refresh_start_video_urls()
+
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("main")
@@ -610,18 +658,24 @@ async def finish_login(uid, e, client, phone):
 
 async def main():
     await start_web()
+    await refresh_start_video_urls()
     await bot.start(bot_token=BOT_TOKEN)
     await manager.boot_all()
     monitor_task = asyncio.create_task(manager.monitor_connections(), name="client-reconnect-monitor")
+    video_refresh_task = asyncio.create_task(
+        refresh_video_urls_periodically(), name="kittu-video-url-refresh"
+    )
     log.info("ready")
     try:
         await bot.run_until_disconnected()
     finally:
         monitor_task.cancel()
-        try:
-            await monitor_task
-        except asyncio.CancelledError:
-            pass
+        video_refresh_task.cancel()
+        for task in (monitor_task, video_refresh_task):
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 if __name__ == "__main__":
