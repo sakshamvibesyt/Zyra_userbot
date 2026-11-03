@@ -20,9 +20,6 @@ OWNER_URL = os.environ.get("OWNER_URL", "https://t.me/Sakshamvenus")
 SUPPORT_URL = os.environ.get("SUPPORT_URL", "https://t.me/Sakshamabout_bot")
 ADD_TO_GROUP_URL = os.environ.get("ADD_TO_GROUP_URL", "https://t.me/?startgroup=true")
 START_STICKER_ID = os.environ.get("START_STICKER_ID", "").strip()
-# Telegram applies the configured emoji reaction to the /start command message.
-# Telegram may reject reactions that are unavailable for the account or chat.
-START_REACTION = os.environ.get("START_REACTION", "🐴").strip() or "🐴"
 OWNER_ID = int(os.environ.get("OWNER_ID", "0") or 0)
 WELCOME_IMAGE = os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.png")
 WELCOME_ANIMATION = os.environ.get("WELCOME_ANIMATION", os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.mp4")).strip()
@@ -178,14 +175,6 @@ def start_buttons():
     ]
 
 
-def panel_buttons():
-    return [
-        [Button.inline("➕ Add Account", b"login"), Button.inline("◉ Account Status", b"panel_status")],
-        [Button.inline("⚙ Plugins", b"panel_plugins"), Button.inline("✦ Help Center", b"help")],
-        [Button.inline("↩ Back to Welcome", b"back_start")],
-    ]
-
-
 def help_buttons():
     return [
         [Button.inline("♙ Account & Settings", b"help_account")],
@@ -239,7 +228,7 @@ async def cmd_start(e):
         await bot(functions.messages.SendReactionRequest(
             peer=e.peer_id,
             msg_id=e.id,
-            reaction=[types.ReactionEmoji(emoticon=START_REACTION)],
+            reaction=[types.ReactionEmoji(emoticon="🐴")],
         ))
     except Exception as ex:
         log.warning("Start reaction failed (Telegram may not allow this chat/reaction): %s", ex)
@@ -370,20 +359,9 @@ async def cmd_cancel_login(e):
 
 @bot.on(events.CallbackQuery(data=b"login"))
 async def cb_login(e):
-    # Always acknowledge the button tap first so Telegram does not keep showing
-    # the loading spinner if access is denied or the login flow has an issue.
     if not await is_panel_admin(e.sender_id):
-        await e.answer("Owner/admin access required", alert=True)
-        try:
-            await bot.send_message(
-                e.chat_id,
-                "🔒 <b>Add Account locked</b>\nSet your numeric Telegram ID in Render as <code>OWNER_ID</code>, then redeploy.",
-                parse_mode="html",
-            )
-        except Exception:
-            log.exception("Could not send Add Account access explanation")
-        return
-    await e.answer("Opening account login…")
+        return await e.answer("Owner/admin access required", alert=True)
+    await e.answer()
     await start_login(e.sender_id, e)
 
 
@@ -402,73 +380,7 @@ async def cmd_panel(e):
         return
     if not e.is_private:
         return await e.reply("🔒 /panel ko bot ke private chat mein use karein.")
-    await bot.send_message(
-        e.chat_id,
-        "<b>✦ 𝐙𝐘𝐑𝐀 • 𝐂𝐎𝐍𝐓𝐑𝐎𝐋 𝐏𝐀𝐍𝐄𝐋 ✦</b>\n"
-        "<i>Account management and bot controls</i>\n\n"
-        "Choose an action below. Add Account starts a secure login flow for an account you own.",
-        parse_mode="html",
-        buttons=panel_buttons(),
-    )
-
-
-@bot.on(events.CallbackQuery(data=b"panel_status"))
-async def cb_panel_status(e):
-    if not await is_panel_admin(e.sender_id):
-        return await e.answer("Owner/admin access required", alert=True)
-    await e.answer()
-    doc = await db.users.find_one({"_id": e.sender_id})
-    if not doc:
-        return await bot.send_message(
-            e.chat_id,
-            "ℹ️ <b>No account connected yet.</b>\nTap Add Account in <code>/panel</code> to connect your own account.",
-            parse_mode="html",
-            buttons=panel_buttons(),
-        )
-    live = e.sender_id in manager.clients
-    await bot.send_message(
-        e.chat_id,
-        "<b>◉ ZYRA ACCOUNT STATUS</b>\n━━━━━━━━━━━━━━━━\n"
-        "👤 Account: <code>%s</code>\n"
-        "⌨ Prefix: <code>%s</code>\n"
-        "📡 State: <b>%s</b>\n"
-        "🔌 Disabled plugins: <code>%s</code>\n━━━━━━━━━━━━━━━━" % (
-            doc.get("name", "?"), doc.get("prefix", "."),
-            "Online" if live else "Offline", ", ".join(doc.get("disabled", [])) or "none",
-        ),
-        parse_mode="html",
-        buttons=panel_buttons(),
-    )
-
-
-@bot.on(events.CallbackQuery(data=b"panel_plugins"))
-async def cb_panel_plugins(e):
-    if not await is_panel_admin(e.sender_id):
-        return await e.answer("Owner/admin access required", alert=True)
-    await e.answer()
-    import pkgutil, plugins as pkg
-    doc = await db.users.find_one({"_id": e.sender_id})
-    if not doc:
-        return await bot.send_message(e.chat_id, "Pehle Add Account se apna account connect karein.", buttons=panel_buttons())
-    disabled = set(doc.get("disabled", []))
-    btns = []
-    for m in pkgutil.iter_modules(pkg.__path__):
-        label = ("OFF" if m.name in disabled else "ON") + " · " + m.name
-        btns.append([Button.inline(label, ("tg:" + m.name).encode())])
-    btns.append([Button.inline("↩ Back to Panel", b"panel_back")])
-    await bot.send_message(e.chat_id, "<b>⚙ ZYRA PLUGIN CONTROL</b>\nTap a plugin to toggle it. Changes restart the connected client.", parse_mode="html", buttons=btns)
-
-
-@bot.on(events.CallbackQuery(data=b"panel_back"))
-async def cb_panel_back(e):
-    if not await is_panel_admin(e.sender_id):
-        return await e.answer("Owner/admin access required", alert=True)
-    await e.answer()
-    try:
-        await e.delete()
-    except Exception:
-        pass
-    await bot.send_message(e.chat_id, "<b>✦ 𝐙𝐘𝐑𝐀 • 𝐂𝐎𝐍𝐓𝐑𝐎𝐋 𝐏𝐀𝐍𝐄𝐋 ✦</b>\n<i>Account management and bot controls</i>", parse_mode="html", buttons=panel_buttons())
+    await send_start_menu(e.chat_id)
 
 
 @bot.on(events.NewMessage(pattern=r"^/help$"))
