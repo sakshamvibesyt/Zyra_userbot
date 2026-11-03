@@ -22,7 +22,8 @@ ADD_TO_GROUP_URL = os.environ.get("ADD_TO_GROUP_URL", "https://t.me/?startgroup=
 START_STICKER_ID = os.environ.get("START_STICKER_ID", "").strip()
 OWNER_ID = int(os.environ.get("OWNER_ID", "0") or 0)
 WELCOME_IMAGE = os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.png")
-WELCOME_ANIMATION = os.environ.get("WELCOME_ANIMATION", os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.mp4")).strip()
+BUNDLED_WELCOME_ANIMATION = os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.mp4")
+WELCOME_ANIMATION = os.environ.get("WELCOME_ANIMATION", "").strip()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("main")
@@ -205,8 +206,15 @@ async def send_start_menu(chat_id, reply_to=None):
             await bot.send_file(chat_id, START_STICKER_ID, reply_to=reply_to)
     except Exception as ex:
         log.warning("start sticker could not be sent; send a sticker directly to this bot to save it: %s", ex)
-    # Use a configured MP4/GIF animation when available; otherwise use the static welcome image.
-    media_path = WELCOME_ANIMATION if WELCOME_ANIMATION and os.path.isfile(WELCOME_ANIMATION) else WELCOME_IMAGE
+    # Prefer a valid configured video/GIF, then the bundled welcome MP4.
+    # Ignore stale Render values that point to an image or a missing file.
+    media_path = None
+    for candidate in (WELCOME_ANIMATION, BUNDLED_WELCOME_ANIMATION):
+        if candidate and os.path.isfile(candidate) and os.path.splitext(candidate)[1].lower() in {".mp4", ".gif", ".webm", ".mov"}:
+            media_path = candidate
+            break
+    if not media_path:
+        media_path = WELCOME_IMAGE
     try:
         await bot.send_file(
             chat_id,
