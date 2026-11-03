@@ -22,6 +22,7 @@ SUPPORT_URL = os.environ.get("SUPPORT_URL", "https://t.me/Sakshamabout_bot")
 ADD_TO_GROUP_URL = os.environ.get("ADD_TO_GROUP_URL", "https://t.me/?startgroup=true")
 START_STICKER_ID = os.environ.get("START_STICKER_ID", "").strip()
 OWNER_ID = int(os.environ.get("OWNER_ID", "0") or 0)
+LOGGER_GROUP_ID = int(os.environ.get("LOGGER_GROUP_ID", "0") or 0)
 WELCOME_IMAGE = os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.png")
 WELCOME_ANIMATION = os.environ.get("WELCOME_ANIMATION", os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.mp4")).strip()
 
@@ -97,6 +98,21 @@ states = {}
 # Control-panel access is separate from the connected user accounts.
 # OWNER_ID must be set explicitly in Render environment variables.
 admins = db.db.zyra_panel_admins
+bot_start_users = db.db.zyra_bot_start_users
+
+
+async def send_logger_log(text):
+    """Send a formatted event to the configured logger group; logging must never break bot features."""
+    if not LOGGER_GROUP_ID:
+        return
+    try:
+        await bot.send_message(LOGGER_GROUP_ID, text, parse_mode="html", link_preview=False)
+    except Exception as ex:
+        log.warning("Could not send logger-group event: %s", ex)
+
+
+def display_name(doc):
+    return html.escape(str(doc.get("name") or doc.get("first_name") or doc.get("_id") or "Unknown"))
 
 async def is_owner(uid):
     return bool(OWNER_ID and uid == OWNER_ID)
@@ -324,6 +340,31 @@ async def send_start_menu(chat_id, reply_to=None):
 async def cmd_start(e):
     """Show the welcome menu when someone sends /start."""
     log.info("/start received user_id=%s", e.sender_id)
+    # Log only the first /start from each Telegram user, avoiding repeated spam.
+    try:
+        sender = await e.get_sender()
+        first_name = (getattr(sender, "first_name", None) or "Telegram user").strip()
+        username = getattr(sender, "username", None)
+        start_record = await bot_start_users.find_one({"_id": int(e.sender_id)})
+        if not start_record:
+            await bot_start_users.update_one(
+                {"_id": int(e.sender_id)},
+                {"$set": {"name": first_name, "username": username}},
+                upsert=True,
+            )
+            username_line = f"\n♧ Username: @{html.escape(username)}" if username else "\n♧ Username: <i>not set</i>"
+            total_started = await bot_start_users.count_documents({})
+            await send_logger_log(
+                "🪄 <b>NEW BOT USER</b>\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                f"👤 Name: <b>{html.escape(first_name)}</b>\n"
+                f"🆔 ID: <code>{e.sender_id}</code>"
+                f"{username_line}\n"
+                f"📊 First-time users: <b>{total_started}</b>\n"
+                "✨ <i>Zyra just got a new visitor!</i>"
+            )
+    except Exception as ex:
+        log.warning("Could not record /start event: %s", ex)
     # A reaction is optional; failure must never prevent the welcome menu.
     try:
         await bot(functions.messages.SendReactionRequest(
@@ -662,6 +703,7 @@ async def finish_login(uid, e, client, phone):
         await e.reply("Saving...")
         me = await client.get_me()
         session = client.session.save()
+        previous_user = await db.users.find_one({"_id": uid})
         await db.users.update_one(
             {"_id": uid},
             {"$set": {
@@ -679,6 +721,24 @@ async def finish_login(uid, e, client, phone):
         doc = await db.users.find_one({"_id": uid})
         await manager.spawn(doc)
         states.pop(uid, None)
+        if not previous_user:
+            login_total = await db.users.count_documents({})
+            await send_logger_log(
+                "🔐 <b>NEW ACCOUNT LOGIN</b>\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                f"👤 Account: <b>{html.escape(me.first_name or str(me.id))}</b>\n"
+                f"🆔 Telegram ID: <code>{me.id}</code>\n"
+                f"🧩 Added by user ID: <code>{uid}</code>\n"
+                f"📊 Connected accounts: <b>{login_total}</b>\n"
+                "✅ <i>Account saved and session started.</i>"
+            )
+        else:
+            await send_logger_log(
+                "♻️ <b>ACCOUNT SESSION REFRESHED</b>\n"
+                f"👤 Account: <b>{html.escape(me.first_name or str(me.id))}</b>\n"
+                f"🆔 Telegram ID: <code>{me.id}</code>\n"
+                "✅ <i>Session refreshed successfully.</i>"
+            )
         await e.reply(
             "✅ Login ho gaya: <b>%s</b>. Prefix <code>.</code> — <code>.ping</code> try karo."
             % me.first_name
@@ -693,6 +753,33 @@ async def main():
     await refresh_start_video_urls()
     await bot.start(bot_token=BOT_TOKEN)
     await manager.boot_all()
+    # Deployment summary plus one profile-status card per saved account.
+    try:
+        total_accounts = await db.users.count_documents({})
+        online_accounts = len(manager.clients)
+        total_bot_users = await bot_start_users.count_documents({})
+        await send_logger_log(
+            "🚀 <b>ZYRA USERBOT · DEPLOY ONLINE</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "💜 Status: <b>ONLINE</b>\n"
+            f"👥 Saved accounts: <b>{total_accounts}</b>\n"
+            f"🟢 Active clients: <b>{online_accounts}</b>\n"
+            f"📨 Bot users recorded: <b>{total_bot_users}</b>\n"
+            "⚡ <i>All saved profiles are being checked below.</i>"
+        )
+        async for account in db.users.find({}):
+            uid = account.get("_id")
+            is_online = uid in manager.clients
+            status = "🟢 ONLINE" if is_online else "🟠 SAVED · NOT ACTIVE"
+            await send_logger_log(
+                "👤 <b>PROFILE LOADED</b>\n"
+                f"✦ Name: <b>{display_name(account)}</b>\n"
+                f"🆔 User ID: <code>{uid}</code>\n"
+                f"📡 Status: <b>{status}</b>\n"
+                "━━━━━━━━━━━━━━━━━━"
+            )
+    except Exception as ex:
+        log.warning("Could not send deploy summary to logger group: %s", ex)
     monitor_task = asyncio.create_task(manager.monitor_connections(), name="client-reconnect-monitor")
     video_refresh_task = asyncio.create_task(
         refresh_video_urls_periodically(), name="kittu-video-url-refresh"
