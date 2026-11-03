@@ -303,6 +303,22 @@ async def send_start_menu(chat_id, reply_to=None):
 
 
 
+
+@bot.on(events.NewMessage(pattern=r"^/start(?:@\w+)?(?:\s+.*)?$"))
+async def cmd_start(e):
+    """Show the welcome menu when someone sends /start."""
+    log.info("/start received user_id=%s", e.sender_id)
+    # A reaction is optional; failure must never prevent the welcome menu.
+    try:
+        await bot(functions.messages.SendReactionRequest(
+            peer=e.peer_id,
+            msg_id=e.id,
+            reaction=[types.ReactionEmoji(emoticon="❤️")],
+        ))
+    except Exception as ex:
+        log.warning("Start reaction failed; continuing to welcome menu: %s", ex)
+    await send_start_menu(e.chat_id)
+
 def is_welcome_media_message(event):
     """Match media sent privately by the configured owner for welcome-sticker saving."""
     return bool(
