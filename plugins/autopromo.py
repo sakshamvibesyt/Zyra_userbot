@@ -20,19 +20,50 @@ def setup(client):
         doc = await states.find_one({"uid": uid})
         return bool(doc.get("enabled")) if doc else DEFAULT_ON
 
+    async def stylish_reply(e, title, body, footer="✦ ᴢʏʀᴀ ᴀᴜᴛᴏ-ᴅʀᴏᴘ ✦"):
+        # Send a separate, styled reply, then remove the command message.
+        message = (
+            "<blockquote>🎀 <b>" + title + "</b> ✨💜\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            + body + "\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "<i>" + footer + "</i></blockquote>"
+        )
+        await e.reply(message, parse_mode="html")
+        try:
+            await e.delete()
+        except Exception:
+            pass
+
     @client.on(events.NewMessage(pattern=r"^" + p + r"promo(?:\s+(on|off|status))?$", outgoing=True))
     async def promo_control(e):
         action = (e.pattern_match.group(1) or "status").lower()
         if action == "on":
             if not CHANNEL:
-                return await e.edit("⚠️ PROMO_CHANNEL environment variable set karo, phir .promo on use karo.")
+                return await stylish_reply(
+                    e, "SETUP REQUIRED",
+                    "⚠️ <b>PROMO_CHANNEL</b> environment variable set karo, phir <code>%spromo on</code> chalao." % html.escape(client.prefix),
+                    "✦ ᴢʏʀᴀ ᴄᴏɴꜰɪɢ ✦",
+                )
             await states.update_one({"uid": uid}, {"$set": {"enabled": True}}, upsert=True)
-            return await e.edit("🎀 ᴢʏʀᴀ ᴀᴜᴛᴏ-ᴅʀᴏᴩ ᴏɴ ʜᴏ ɢᴀʏᴀ! ᴀʙ ᴅʀᴀᴍᴀ ꜱʜᴜʀᴜ 💅")
+            return await stylish_reply(
+                e, "AUTO-DROP ON HO GAYA! 💅",
+                "👑 <b>Zyra Auto-Drop</b> is now <b>ON</b> ✅\nAb configured channel promo enabled hai! 🚀",
+                "✦ ᴅʀᴀᴍᴀ ꜱʜᴜʀᴜ ✦",
+            )
         if action == "off":
             await states.update_one({"uid": uid}, {"$set": {"enabled": False}}, upsert=True)
-            return await e.edit("🎀 ᴢʏʀᴀ ᴀᴜᴛᴏ-ᴅʀᴏᴩ ʙᴀɴᴅ ᴋᴀʀ ᴅɪʏᴀ ᴄᴜᴛɪᴇ 🛑")
-        state = "ON" if await enabled() else "OFF"
-        await e.edit("🎀 <b>ZYRA AUTO-DROP</b> · <code>%s</code>\nChannel: <code>%s</code>" % (state, html.escape(CHANNEL or "not configured")))
+            return await stylish_reply(
+                e, "AUTO-DROP BAND KAR DIYA CUTIE 🛑",
+                "🌙 <b>Zyra Auto-Drop</b> is now <b>OFF</b> ❌\nAuto-promo pause kar diya gaya hai.",
+                "✦ ᴅʀᴏᴘ ᴘᴀᴜꜱᴇᴅ ✦",
+            )
+        state = "ON ✅" if await enabled() else "OFF 🛑"
+        await stylish_reply(
+            e, "AUTO-DROP STATUS",
+            "👑 <b>Status:</b> " + state + "\n🔗 <b>Channel:</b> <code>" + html.escape(CHANNEL or "not configured") + "</code>",
+            "✦ ᴢʏʀᴀ ꜱᴛᴀᴛᴜꜱ ✦",
+        )
 
     @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_group))
     async def promo(e):
