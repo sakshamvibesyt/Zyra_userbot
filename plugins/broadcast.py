@@ -1,203 +1,257 @@
-"""Opt-in broadcast for Zyra userbot.
+"""Zyra Promotion Studio + opt-in broadcast.
 
-Groups must explicitly opt in with .broadcast here. Private users opt in by
-DMing .broadcast subscribe. A replied-to photo/media can be sent with a caption
-and URL buttons using: .broadcast Caption text || Button label - https://example.com
-Multiple URL buttons can be separated with semicolons.
+Commands: .promotion (or .broadcast) opens a guided composer.
+Groups opt in with .broadcast here / leave. DM recipients opt in with
+.broadcast subscribe / unsubscribe. Delivery is limited to opted-in targets.
 """
 import asyncio
+import html
 import logging
 import re
 from telethon import Button, events
 from telethon.errors import FloodWaitError, ChatWriteForbiddenError, UserIsBlockedError
 
 log = logging.getLogger(__name__)
-URL_RE = re.compile(r"^\s*(.{1,64}?)\s*-\s*(https?://\S+)\s*$", re.I)
-
-
-def _parse_caption_and_buttons(raw):
-    """Parse caption and URL buttons from `caption || LABEL - URL; LABEL - URL`.
-
-    Button definitions may be separated by semicolons or newlines. Also accepts
-    hyphen/en-dash/em-dash between label and URL.
-    """
-    if "||" not in raw:
-        return raw.strip() or None, None
-
-    caption, raw_buttons = raw.split("||", 1)
-    buttons = []
-    # A semicolon is the primary separator; newline also works for copy/pasted commands.
-    items = re.split(r"[;\n]+", raw_buttons)
-    for item in items:
-        item = item.strip()
-        match = re.match(
-            r"^(.{1,64}?)\s*[-–—]\s*(https?://\S+)\s*$",
-            item,
-            re.I,
-        )
-        if not match:
-            continue
-        label = match.group(1).strip()
-        url = match.group(2).strip().rstrip(",")
-        if label and url.startswith(("https://", "http://")):
-            buttons.append(Button.url(label, url))
-
-    # Telethon expects rows: [[button1, button2], [button3]].
-    return caption.strip(), ([buttons] if buttons else None)
-
-
-def _copy_url_buttons(message):
-    """Rebuild URL buttons from a source message; callback buttons are not copied."""
-    rows = []
-    for row in (getattr(message, "buttons", None) or []):
-        rebuilt = []
-        for button in row:
-            url = getattr(button, "url", None)
-            label = getattr(button, "text", None)
-            if url and label and str(url).startswith(("https://", "http://")):
-                rebuilt.append(Button.url(str(label), str(url)))
-        if rebuilt:
-            rows.append(rebuilt)
-    return rows or None
+URL_RE = re.compile(r"^\s*(.{1,64}?)\s*\|\s*(https?://\S+)\s*$", re.I)
 
 
 def setup(client):
     prefix = re.escape(client.prefix)
     uid = client.uid
     collection = __import__("db").db.zyra_broadcast_subscriptions
+    sessions = {}  # chat_id -> draft; wizard only lives while this client process runs
     running = {"task": None, "stop": False}
 
-    async def reply(e, text):
-        await e.reply(text, parse_mode="html")
+    async def say(chat_id, text, buttons=None):
+        return await client.send_message(chat_id, text, buttons=buttons, parse_mode="html", link_preview=False)
 
-    @client.on(events.NewMessage(pattern=r"(?s)^" + prefix + r"broadcast(?:\s+.*)?$", outgoing=True))
-    async def broadcast_control(e):
-        raw = (e.raw_text or "").strip()
-        command = raw[len(client.prefix + "broadcast"):].strip()
-        parts = command.split(None, 1)
-        action = parts[0].lower() if parts else "send"
-        remainder = parts[1] if len(parts) > 1 else ""
+    async def begin(chat_id):
+        sessions[int(chat_id)] = {"step": "media", "media_chat": None, "media_id": None, "caption": "", "buttons": []}
+        await say(chat_id,
+            "✦ <b>ZYRA PROMOTION STUDIO</b> ✦\n━━━━━━━━━━━━━━━━━━\n"
+            "Let's create your post.\n\n<b>Step 1/3 · Media</b>\n"
+            "Photo/video bhejo, ya media nahi chahiye to <code>/skip</code> bhejo.\n\n"
+            "<i>Cancel karne ke liye /cancel</i>")
 
-        if action == "here" and not remainder:
-            if not e.is_group:
-                return await reply(e, "⚠️ <b>.broadcast here</b> group ke andar use karo.")
-            await collection.update_one(
-                {"uid": uid, "kind": "group", "target_id": int(e.chat_id)},
-                {"$set": {"title": (getattr(e.chat, "title", None) or str(e.chat_id))}}, upsert=True
-            )
-            return await reply(e, "📣 <b>Ye group broadcast list mein add ho gaya.</b>")
-        if action == "leave" and not remainder:
-            if not e.is_group:
-                return await reply(e, "⚠️ <b>.broadcast leave</b> group ke andar use karo.")
-            await collection.delete_one({"uid": uid, "kind": "group", "target_id": int(e.chat_id)})
-            return await reply(e, "✅ Is group ko broadcast list se hata diya.")
-        if action == "stop" and not remainder:
-            if running["task"] and not running["task"].done():
-                running["stop"] = True
-                return await reply(e, "🛑 <b>Broadcast stop request mil gayi.</b>")
-            return await reply(e, "ℹ️ Abhi koi broadcast nahi chal raha.")
-        if action == "status" and not remainder:
-            groups = await collection.count_documents({"uid": uid, "kind": "group"})
-            dms = await collection.count_documents({"uid": uid, "kind": "dm"})
-            active = bool(running["task"] and not running["task"].done())
-            return await reply(e, "📊 <b>ZYRA BROADCAST STATUS</b>\n━━━━━━━━━━━━━━\n👥 Joined groups: <code>%s</code>\n💌 Opt-in DMs: <code>%s</code>\n⚙️ Running: <code>%s</code>\n━━━━━━━━━━━━━━" % (groups, dms, "Yes" if active else "No"))
-        if action == "help" and not remainder:
-            return await reply(e, "📣 <b>ZYRA BROADCAST</b>\n━━━━━━━━━━━━━━\n1. Group mein <code>.broadcast here</code> — group add\n2. Group mein <code>.broadcast leave</code> — group remove\n3. Kisi photo/media par reply karke <code>.broadcast Caption || Button - https://example.com</code>\n4. Sirf text bhejne ke liye message par reply karke <code>.broadcast</code>\n5. <code>.broadcast status</code> — counts\n6. <code>.broadcast stop</code> — stop request\n\n💌 DM users ko pehle <code>.broadcast subscribe</code> bhejna hoga; band karne ke liye <code>.broadcast unsubscribe</code>.\n<i>Broadcast sirf opted-in destinations par jaata hai.</i>")
+    async def send_status(e, text):
+        try:
+            await e.reply(text, parse_mode="html", link_preview=False)
+        except Exception:
+            pass
 
-        # A bare command or caption/options must reply to the image/media/text source.
-        source = await e.get_reply_message()
-        if not source:
-            return await reply(e, "⚠️ Jis photo/message ko bhejna hai us par reply karo. Example: <code>.broadcast Caption || OWNER - https://t.me/username</code>")
-        if running["task"] and not running["task"].done():
-            return await reply(e, "⏳ Ek broadcast already chal raha hai. Finish hone ya <code>.broadcast stop</code> ka wait karo.")
+    def make_button_rows(items):
+        return [[Button.url(label, url)] for label, url in items] or None
 
-        # If no custom caption/options are supplied, use the source caption/text and URL buttons.
-        if command:
-            caption, buttons = _parse_caption_and_buttons(command)
+    async def preview(chat_id, draft):
+        source = None
+        if draft.get("media_id"):
+            source = await client.get_messages(draft["media_chat"], ids=draft["media_id"])
+        caption = draft.get("caption", "")
+        buttons = make_button_rows(draft.get("buttons", []))
+        if source and source.media:
+            preview_msg = await client.send_file(chat_id, source.media, caption=caption or None, buttons=buttons)
         else:
-            caption, buttons = None, None
-        if buttons is None:
-            buttons = _copy_url_buttons(source)
-        if caption is None:
-            caption = source.message or ""
-        preserve_entities = not command and bool(source.entities)
+            preview_msg = await client.send_message(chat_id, caption or "<i>(No text)</i>", buttons=buttons, parse_mode="html", link_preview=False)
+        controls = [[Button.inline("✅ Done · Publish", data=f"zyrapub:{preview_msg.id}"), Button.inline("✖ Cancel", data=f"zyracancel:{preview_msg.id}")]]
+        await say(chat_id, "<b>Preview ready.</b> Publish this post to opted-in DMs and groups?", buttons=controls)
 
+    async def deliver(draft, status_message):
         destinations = []
         async for doc in collection.find({"uid": uid}):
             destinations.append(doc)
         if not destinations:
-            return await reply(e, "ℹ️ Koi opted-in destination nahi hai. Group mein <code>.broadcast here</code> use karo ya users se DM mein <code>.broadcast subscribe</code> karwao.")
-
-        running["stop"] = False
-        status = await reply(e, "🚀 <b>Broadcast start ho gaya!</b>\n🖼️ Photo/media + caption\n🔘 URL buttons parsed: <code>%s</code>\n📬 Destinations: <code>%s</code>\n🛑 Stop: <code>.broadcast stop</code>" % (sum(len(row) for row in (buttons or [])), len(destinations)))
-
-        async def deliver():
-            sent, failed, stopped = 0, 0, False
             try:
-                for dest in destinations:
-                    if running["stop"]:
-                        stopped = True
-                        break
-                    target = int(dest["target_id"])
+                await status_message.edit("ℹ️ No opted-in destinations yet. Groups: <code>.broadcast here</code>; DM users: <code>.broadcast subscribe</code>.", parse_mode="html")
+            except Exception:
+                pass
+            return
+
+        source = None
+        if draft.get("media_id"):
+            source = await client.get_messages(draft["media_chat"], ids=draft["media_id"])
+        caption = draft.get("caption", "")
+        buttons = make_button_rows(draft.get("buttons", []))
+        sent = failed = 0
+        running["stop"] = False
+        try:
+            for dest in destinations:
+                if running["stop"]:
+                    break
+                target = int(dest["target_id"])
+                try:
+                    if source and source.media:
+                        await client.send_file(target, source.media, caption=caption or None, buttons=buttons)
+                    else:
+                        await client.send_message(target, caption, buttons=buttons, link_preview=False, parse_mode="html")
+                    sent += 1
+                except FloodWaitError as ex:
+                    await asyncio.sleep(ex.seconds)
                     try:
-                        if source.media:
-                            kwargs = {"caption": caption, "buttons": buttons}
-                            if preserve_entities:
-                                kwargs["formatting_entities"] = source.entities
-                            await client.send_file(target, source.media, **kwargs)
+                        if source and source.media:
+                            await client.send_file(target, source.media, caption=caption or None, buttons=buttons)
                         else:
-                            kwargs = {"buttons": buttons, "link_preview": False}
-                            if preserve_entities:
-                                kwargs["formatting_entities"] = source.entities
-                            await client.send_message(target, caption, **kwargs)
+                            await client.send_message(target, caption, buttons=buttons, link_preview=False, parse_mode="html")
                         sent += 1
-                    except FloodWaitError as ex:
-                        await asyncio.sleep(ex.seconds)
-                        try:
-                            if source.media:
-                                await client.send_file(target, source.media, caption=caption, buttons=buttons)
-                            else:
-                                await client.send_message(target, caption, buttons=buttons, link_preview=False)
-                            sent += 1
-                        except Exception:
-                            failed += 1
-                    except (ChatWriteForbiddenError, UserIsBlockedError):
-                        failed += 1
                     except Exception:
                         failed += 1
-                        log.exception("broadcast delivery failed uid=%s target=%s", uid, target)
-                    await asyncio.sleep(2)
-            finally:
-                running["task"] = None
-                running["stop"] = False
-                try:
-                    await status.edit(
-                        "📣 <b>BROADCAST REPORT</b>\n━━━━━━━━━━━━━━\n✅ Sent: <code>%s</code>\n❌ Failed: <code>%s</code>\n%s\n━━━━━━━━━━━━━━" % (
-                            sent, failed, "🛑 Stopped by request" if stopped else "🏁 Completed"
-                        ), parse_mode="html"
-                    )
+                except (ChatWriteForbiddenError, UserIsBlockedError):
+                    failed += 1
                 except Exception:
-                    pass
+                    failed += 1
+                    log.exception("promotion delivery failed uid=%s target=%s", uid, target)
+                await asyncio.sleep(1.5)
+        finally:
+            running["task"] = None
+            running["stop"] = False
+            try:
+                await status_message.edit(
+                    "✦ <b>ZYRA PROMOTION REPORT</b> ✦\n━━━━━━━━━━━━━━━━━━\n"
+                    f"✅ Sent: <code>{sent}</code>\n❌ Failed: <code>{failed}</code>\n"
+                    f"{'🛑 Stopped' if running['stop'] else '🏁 Finished'}\n━━━━━━━━━━━━━━━━━━",
+                    parse_mode="html")
+            except Exception:
+                pass
 
-        running["task"] = asyncio.create_task(deliver())
+    @client.on(events.NewMessage(pattern=r"(?is)^" + prefix + r"(?:promotion|broadcast)(?:\s+(.*))?$", outgoing=True))
+    async def promotion_commands(e):
+        raw = (e.raw_text or "").strip()
+        match = re.match(r"(?is)^" + prefix + r"(promotion|broadcast)(?:\s+(.*))?$", raw)
+        if not match:
+            return
+        root = match.group(1).lower()
+        tail = (match.group(2) or "").strip()
+        parts = tail.split(None, 1)
+        action = parts[0].lower() if parts else ""
+        value = parts[1].strip() if len(parts) > 1 else ""
+
+        if root == "broadcast" and action in ("here", "leave", "subscribe", "unsubscribe", "status", "stop", "help"):
+            if action == "here":
+                if not e.is_group:
+                    return await send_status(e, "⚠️ <code>.broadcast here</code> group ke andar use karo.")
+                await collection.update_one({"uid": uid, "kind": "group", "target_id": int(e.chat_id)}, {"$set": {"title": getattr(e.chat, "title", None) or str(e.chat_id)}}, upsert=True)
+                return await send_status(e, "✅ This group has opted in to Zyra promotions. Remove with <code>.broadcast leave</code>.")
+            if action == "leave":
+                if not e.is_group:
+                    return await send_status(e, "⚠️ Is command ko target group mein use karo.")
+                await collection.delete_one({"uid": uid, "kind": "group", "target_id": int(e.chat_id)})
+                return await send_status(e, "✅ This group has been removed from promotion delivery.")
+            if action == "subscribe":
+                if not e.is_private:
+                    return await send_status(e, "DM mein <code>.broadcast subscribe</code> bhejo.")
+                await collection.update_one({"uid": uid, "kind": "dm", "target_id": int(e.sender_id)}, {"$set": {"title": "Telegram user"}}, upsert=True)
+                return await send_status(e, "💜 Subscribed to Zyra updates. Stop anytime with <code>.broadcast unsubscribe</code>.")
+            if action == "unsubscribe":
+                await collection.delete_one({"uid": uid, "kind": "dm", "target_id": int(e.sender_id)})
+                return await send_status(e, "🛑 Unsubscribed from Zyra broadcast updates.")
+            if action == "status":
+                groups = await collection.count_documents({"uid": uid, "kind": "group"})
+                dms = await collection.count_documents({"uid": uid, "kind": "dm"})
+                return await send_status(e, f"✦ <b>ZYRA PROMOTION STATUS</b> ✦\n👥 Opt-in groups: <code>{groups}</code>\n💌 Opt-in DMs: <code>{dms}</code>\n⚙️ Sending: <code>{'Yes' if running['task'] and not running['task'].done() else 'No'}</code>")
+            if action == "stop":
+                if running["task"] and not running["task"].done():
+                    running["stop"] = True
+                    return await send_status(e, "🛑 Stop request sent.")
+                return await send_status(e, "ℹ️ No promotion is running.")
+            return await send_status(e, "✦ <b>ZYRA PROMOTION</b> ✦\n<code>.promotion</code> — create a post\n<code>.broadcast status</code> — status\n<code>.broadcast here/leave</code> — opt a group in/out\n<code>.broadcast subscribe/unsubscribe</code> — DM opt-in/out\n<code>.broadcast stop</code> — stop sending")
+
+        if action == "cancel":
+            sessions.pop(int(e.chat_id), None)
+            return await send_status(e, "✖ Promotion draft cancelled.")
+        if root == "promotion" or (root == "broadcast" and not action):
+            if running["task"] and not running["task"].done():
+                return await send_status(e, "⏳ A promotion is already being sent. Wait for it to finish or use <code>.broadcast stop</code>.")
+            return await begin(e.chat_id)
+
+    @client.on(events.NewMessage(outgoing=True))
+    async def promotion_wizard(e):
+        chat_id = int(e.chat_id)
+        draft = sessions.get(chat_id)
+        if not draft:
+            return
+        raw = (e.raw_text or "").strip()
+        if re.match(r"(?is)^" + prefix + r"(?:promotion|broadcast|cancel)(?:\s|$)", raw):
+            return
+        if raw.lower() == "/cancel":
+            sessions.pop(chat_id, None)
+            return await say(chat_id, "✖ Draft cancelled.")
+        step = draft["step"]
+        if step == "media":
+            if raw.lower() == "/skip":
+                draft["step"] = "caption"
+            elif e.media:
+                draft["media_chat"], draft["media_id"] = chat_id, int(e.id)
+                draft["step"] = "caption"
+            else:
+                return await say(chat_id, "⚠️ Photo/video bhejo ya <code>/skip</code> likho.")
+            return await say(chat_id, "<b>Step 2/3 · Message / Caption</b>\nText bhejo, ya blank caption ke liye <code>/skip</code>.")
+        if step == "caption":
+            draft["caption"] = "" if raw.lower() == "/skip" else raw
+            draft["step"] = "buttons"
+            return await say(chat_id, "<b>Step 3/3 · URL buttons</b>\nButton is format mein bhejo: <code>OWNER | https://t.me/username</code>\nMultiple buttons ek-ek karke bhej sakte ho.\n<code>/done</code> = finish buttons\n<code>/skip</code> = no buttons")
+        if step == "buttons":
+            if raw.lower() == "/skip":
+                draft["buttons"] = []
+                sessions.pop(chat_id, None)
+                return await preview(chat_id, draft)
+            if raw.lower() == "/done":
+                sessions.pop(chat_id, None)
+                return await preview(chat_id, draft)
+            found = URL_RE.match(raw)
+            if not found:
+                return await say(chat_id, "⚠️ Format sahi rakho: <code>Button Name | https://example.com</code>\nFinish: <code>/done</code> · No buttons: <code>/skip</code>")
+            label, url = found.group(1).strip(), found.group(2).strip()
+            if len(draft["buttons"]) >= 8:
+                return await say(chat_id, "Maximum 8 buttons allowed. <code>/done</code> bhejo to preview kholun.")
+            draft["buttons"].append((label, url))
+            return await say(chat_id, f"✅ Button added: <b>{html.escape(label)}</b>\nEk aur bhejo, ya <code>/done</code>.")
+
+    @client.on(events.CallbackQuery(pattern=rb"^zyrapub:\d+$"))
+    async def publish_callback(e):
+        try:
+            await e.answer("Publishing…")
+            msg_id = int(e.data.decode().split(":", 1)[1])
+            preview_msg = await client.get_messages(e.chat_id, ids=msg_id)
+            # Rebuild draft from the preview message; buttons copied from preview.
+            rows = []
+            for row in (getattr(preview_msg, "buttons", None) or []):
+                for button in row:
+                    if getattr(button, "url", None) and getattr(button, "text", None):
+                        rows.append((str(button.text), str(button.url)))
+            draft = {"media_chat": int(e.chat_id), "media_id": None, "caption": preview_msg.raw_text or "", "buttons": rows}
+            # If preview is media, the preview itself is the source.
+            if preview_msg.media:
+                draft["media_id"] = int(preview_msg.id)
+            if running["task"] and not running["task"].done():
+                return await e.respond("A promotion is already running.")
+            status = await client.send_message(e.chat_id, "🚀 <b>Promotion started…</b>", parse_mode="html")
+            running["task"] = asyncio.create_task(deliver(draft, status))
+            try:
+                await e.edit("✅ <b>Published to opted-in destinations.</b>", buttons=None, parse_mode="html")
+            except Exception:
+                pass
+        except Exception:
+            log.exception("promotion publish callback failed uid=%s", uid)
+            await e.answer("Publish failed. Check logs.", alert=True)
+
+    @client.on(events.CallbackQuery(pattern=rb"^zyracancel:\d+$"))
+    async def cancel_callback(e):
+        try:
+            await e.answer("Draft cancelled")
+            await e.edit("✖ <b>Promotion cancelled.</b>", buttons=None, parse_mode="html")
+        except Exception:
+            pass
 
     @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
-    async def dm_subscription(e):
-        if not e.raw_text:
+    async def incoming_subscriptions(e):
+        text = (e.raw_text or "").strip().lower()
+        if text not in (f"{client.prefix.lower()}broadcast subscribe", f"{client.prefix.lower()}broadcast unsubscribe"):
             return
-        command = e.raw_text.strip().lower()
-        if command == ".broadcast subscribe":
-            sender = await e.get_sender()
-            if not sender or getattr(sender, "bot", False) or sender.id == client.me_id:
-                return
-            await collection.update_one(
-                {"uid": uid, "kind": "dm", "target_id": int(sender.id)},
-                {"$set": {"title": getattr(sender, "first_name", "Telegram user")}}, upsert=True
-            )
-            await e.reply("✅ Broadcast updates ke liye subscribe ho gaye. Band karne ke liye <code>.broadcast unsubscribe</code> bhejo.", parse_mode="html")
-        elif command == ".broadcast unsubscribe":
-            sender = await e.get_sender()
-            if not sender:
-                return
+        sender = await e.get_sender()
+        if not sender or getattr(sender, "bot", False) or sender.id == client.me_id:
+            return
+        if text.endswith("subscribe"):
+            await collection.update_one({"uid": uid, "kind": "dm", "target_id": int(sender.id)}, {"$set": {"title": getattr(sender, "first_name", "Telegram user")}}, upsert=True)
+            await e.reply("💜 Subscribed to Zyra updates. Send <code>.broadcast unsubscribe</code> anytime to stop.", parse_mode="html")
+        else:
             await collection.delete_one({"uid": uid, "kind": "dm", "target_id": int(sender.id)})
-            await e.reply("✅ Broadcast updates se unsubscribe ho gaye.", parse_mode="html")
+            await e.reply("🛑 Unsubscribed from Zyra updates.")
