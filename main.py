@@ -254,6 +254,18 @@ async def send_start_menu(chat_id, reply_to=None):
         await bot.send_message(chat_id, WELCOME_TEXT, buttons=start_buttons(), parse_mode="html", reply_to=reply_to)
 
 
+
+def is_welcome_media_message(event):
+    """Match media sent privately by the configured owner for welcome-sticker saving."""
+    return bool(
+        OWNER_ID
+        and event.is_private
+        and event.sender_id == OWNER_ID
+        and event.media
+        and not getattr(event, "via_bot_id", None)
+    )
+
+
 @bot.on(events.NewMessage(func=is_welcome_media_message))
 async def sticker_id_helper(e):
     if not await require_panel_access(e):
