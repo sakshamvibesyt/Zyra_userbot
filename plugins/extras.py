@@ -76,7 +76,11 @@ def setup(client):
             f"<code>{prefix}clap text</code> · clap between words\n"
             f"<code>{prefix}emojify text</code> · add random emojis\n"
             f"<code>{prefix}spoiler text</code> · spoiler formatting\n"
-            f"<code>{prefix}type text</code> · typewriter effect\n\n"
+            f"<code>{prefix}type text</code> · typewriter effect\n"
+            f"<code>{prefix}tagall [message]</code> · paced separate member mentions (max 20)\n"
+            f"<code>{prefix}addraid msg1 | msg2</code> · save message rotation\n"
+            f"<code>{prefix}raid 5</code> · send up to 10 saved messages\n"
+            f"<code>{prefix}clearraid</code> · clear saved messages\n\n"
             "<b>☾ AFK & AUTO-DROP</b>\n"
             f"<code>{prefix}afk [message]</code> · activate AFK with custom text\n"
             f"<code>{prefix}afkmsg message</code> · save default AFK message\n"
@@ -97,7 +101,7 @@ def setup(client):
             f"<code>{prefix}stop word</code> · remove filter\n"
             f"<code>{prefix}filters</code> · list current-chat filters\n\n"
             "<b>⚒ GROUP ADMIN</b>\n"
-            f"<code>{prefix}adminhelp</code> · admin command guide (for group moderators)\n\n"
+            f"<code>{prefix}adminhelp</code> · admin-only command guide\n\n"
             "<b>✦ AI</b>\n"
             f"<code>{prefix}ai question</code> · ask configured AI\n\n"
             "<b>━━━━━━━━━━━━━━━━━━</b>\n"
@@ -105,6 +109,90 @@ def setup(client):
             "Admin commands require Telegram permissions. Clone only with permission.</i>\n"
             "<b>╰━━━『 ᴍᴀᴅᴇ ᴡɪᴛʜ ᴢʏʀᴀ 💜 』━━━╯</b>"
         )
+
+
+    # Per-chat saved rotation messages. Stored in MongoDB so they survive restarts.
+    raid_store = database.db.zyra_raid_messages
+    raid_running = set()
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"addraid(?:\s+([\s\S]+))?$", outgoing=True))
+    async def addraid(e):
+        raw = (e.pattern_match.group(1) or "").strip()
+        msgs = [part.strip() for part in raw.split("|") if part.strip()]
+        if not msgs:
+            return await e.edit("Usage: <code>%saddraid message 1 | message 2 | message 3</code>" % client.prefix)
+        if len(msgs) > 20 or any(len(m) > 1000 for m in msgs):
+            return await e.edit("Limit: maximum 20 messages; each message up to 1000 characters.")
+        await raid_store.update_one({"uid": uid, "chat_id": e.chat_id}, {"$set": {"messages": msgs}}, upsert=True)
+        await e.edit("✅ Saved <b>%d</b> rotation messages for this chat." % len(msgs))
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"(?:clearraid|deltraid|delraid)$", outgoing=True))
+    async def clearraid(e):
+        await raid_store.delete_one({"uid": uid, "chat_id": e.chat_id})
+        raid_running.discard(e.chat_id)
+        await e.edit("🗑️ Saved rotation messages cleared for this chat.")
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"raid(?:\s+(\d+))?$", outgoing=True))
+    async def raid(e):
+        count = int(e.pattern_match.group(1) or 5)
+        if count < 1 or count > 10:
+            return await e.edit("Choose 1–10 messages per run to avoid flooding the chat.")
+        doc = await raid_store.find_one({"uid": uid, "chat_id": e.chat_id})
+        msgs = (doc or {}).get("messages", [])
+        if not msgs:
+            return await e.edit("No saved messages. Use <code>%saddraid msg1 | msg2</code> first." % client.prefix)
+        if e.chat_id in raid_running:
+            return await e.edit("A rotation is already running here. Use <code>%sstop</code> to stop it." % client.prefix)
+        await e.delete()
+        raid_running.add(e.chat_id)
+        try:
+            for i in range(count):
+                if e.chat_id not in raid_running:
+                    break
+                await client.send_message(e.chat_id, msgs[i % len(msgs)])
+                if i + 1 < count:
+                    await asyncio.sleep(3)
+        finally:
+            raid_running.discard(e.chat_id)
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"stop$", outgoing=True))
+    async def stop_raid(e):
+        if e.chat_id in raid_running:
+            raid_running.discard(e.chat_id)
+            await e.edit("⏹️ Message rotation stopped.")
+        else:
+            await e.edit("No active rotation in this chat.")
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"tagall(?:\s+([\s\S]+))?$", outgoing=True))
+    async def tagall(e):
+        # Explicitly paced and capped: one separate reply/mention per member, max 20 per command.
+        custom = (e.pattern_match.group(1) or "").strip()
+        if not custom:
+            custom = "👋 Everyone, join the chat when you're free!"
+        try:
+            participants = []
+            async for user in client.iter_participants(e.chat_id):
+                if getattr(user, "bot", False) or getattr(user, "deleted", False):
+                    continue
+                participants.append(user)
+                if len(participants) >= 20:
+                    break
+        except Exception as ex:
+            return await e.edit("Could not get group members: <code>%s</code>" % html.escape(str(ex)[:120]))
+        if not participants:
+            return await e.edit("No mentionable members found.")
+        await e.delete()
+        for user in participants:
+            name = html.escape((getattr(user, "first_name", None) or "there"))
+            mention = '<a href="tg://user?id=%s">%s</a>' % (user.id, name)
+            # Quote-style custom text; send each mention as a separate message.
+            quote = html.escape(custom[:700])
+            try:
+                await client.send_message(e.chat_id, "<blockquote>%s</blockquote>\\n%s" % (quote, mention), parse_mode="html")
+            except Exception:
+                continue
+            await asyncio.sleep(2)
+
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"alive$", outgoing=True))
     async def alive(e):
@@ -304,32 +392,3 @@ def setup(client):
     async def list_filters(e):
         items = await filters.find({"uid": uid, "chat_id": e.chat_id}).to_list(length=50)
         await e.edit("<b>Chat filters</b>\n" + ("\n".join("• " + x["trigger"] for x in items) if items else "No filters in this chat."))
-
-
-    @client.on(events.NewMessage(pattern=r"^" + p + r"tagall(?:\s+([\s\S]+))?$", outgoing=True))
-    async def tagall(e):
-        """Send one custom group notice and mention at most 20 members."""
-        if not e.is_group:
-            await e.edit("⚠️ <b>.tagall sirf group mein use karo.</b>", parse_mode="html")
-            return
-        custom = (e.pattern_match.group(1) or "").strip()
-        # Keep custom text as plain text so emojis, newlines, pipes and symbols don't break HTML parsing.
-        notice = custom[:1500] if custom else "📣 Group members, please check the chat!"
-        mentions = []
-        try:
-            async for participant in client.iter_participants(e.chat_id):
-                if getattr(participant, "bot", False) or getattr(participant, "deleted", False):
-                    continue
-                name = " ".join(x for x in [getattr(participant, "first_name", ""), getattr(participant, "last_name", "")] if x).strip() or "Member"
-                mentions.append(f"[{name}](tg://user?id={participant.id})")
-                if len(mentions) >= 20:
-                    break
-        except Exception:
-            await e.edit("⚠️ Members list read nahi ho paayi. Check group access/permissions.")
-            return
-        if not mentions:
-            await e.edit("⚠️ Is group ke members nahi mil paaye.")
-            return
-        # A single message only; cap mentions to avoid flooding large groups.
-        await e.delete()
-        await client.send_message(e.chat_id, notice + "\n\n" + " · ".join(mentions), link_preview=False, parse_mode="md")
