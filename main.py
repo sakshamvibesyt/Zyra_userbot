@@ -41,6 +41,11 @@ WELCOME_VIDEO_URLS = [
     "https://www.image2url.com/r2/default/videos/1793778035515-7758386e-0ea9-42d6-b110-f6c0665e196a.mp4",
     "https://www.image2url.com/r2/default/videos/1793778142026-91548378-eee3-4382-8d3c-bf75cae322a7.mp4",
     "https://videotourl.com/videos/1793779136616-4e46ae87-74eb-4dde-8055-7372974add4a.mp4",
+    "https://www.image2url.com/r2/default/videos/1793781045682-f99fe8eb-e9d8-428d-a440-ff0811aa6fcd.mp4",
+    "https://www.image2url.com/r2/default/videos/1793781261302-44decde5-6d9f-45eb-b3d5-ef66a0213014.mp4",
+    "https://www.image2url.com/r2/default/videos/1793781361709-49f91c16-1baf-4bcb-b7eb-b7b039632ac3.mp4",
+    "https://www.image2url.com/r2/default/videos/1793781440382-7b8108b1-a774-45f2-a373-fe3909da2d8f.mp4",
+    "https://www.image2url.com/r2/default/videos/1793781552186-27ef67e4-8688-4e6e-a4c1-4a49930a5af1.mp4",
 ]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
