@@ -175,7 +175,7 @@ def setup(client):
                 if getattr(user, "bot", False) or getattr(user, "deleted", False):
                     continue
                 participants.append(user)
-                if len(participants) >= 20:
+                if len(participants) >= 5000:
                     break
         except Exception as ex:
             return await e.edit("Could not get group members: <code>%s</code>" % html.escape(str(ex)[:120]))
