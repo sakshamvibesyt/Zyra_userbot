@@ -1,4 +1,5 @@
-import asyncio, logging, os, time
+import asyncio, logging, os, time, random, re, ast, html, tempfile
+import aiohttp
 
 from aiohttp import web
 from telethon import TelegramClient, events, Button, functions, types
@@ -21,8 +22,72 @@ SUPPORT_URL = os.environ.get("SUPPORT_URL", "https://t.me/Sakshamabout_bot")
 ADD_TO_GROUP_URL = os.environ.get("ADD_TO_GROUP_URL", "https://t.me/?startgroup=true")
 START_STICKER_ID = os.environ.get("START_STICKER_ID", "").strip()
 OWNER_ID = int(os.environ.get("OWNER_ID", "0") or 0)
+LOGGER_GROUP_ID = int(os.environ.get("LOGGER_GROUP_ID", "0") or 0)
 WELCOME_IMAGE = os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.png")
 WELCOME_ANIMATION = os.environ.get("WELCOME_ANIMATION", os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.mp4")).strip()
+
+# Rotating start video URLs adapted from the reference KittuBot repository.
+START_VIDEO_URLS = [
+    "https://yukiapi.site/file/6CXCn2De",
+    "https://yukiapi.site/file/YWwD9Qr8",
+    "https://yukiapi.site/file/rsCNQf0j",
+    "https://yukiapi.site/file/dWFtIZny",
+    "https://yukiapi.site/file/eYtZuZwz",
+    "https://yukiapi.site/file/euiiZogt",
+    "https://yukiapi.site/file/UcidJrAQ",
+    "https://yukiapi.site/file/AtKzDFZU",
+    "https://yukiapi.site/file/nGA7YMtQ",
+    "https://yukiapi.site/file/aQSUKqZk",
+    "https://yukiapi.site/file/ns7QmFhQ",
+    "https://yukiapi.site/file/tZCMxz2a",
+]
+
+# Auto-sync the START_IMG_URL list from KITTUBOT's GitHub config.
+# The built-in URLs above remain a fallback if GitHub is unavailable.
+KITTU_CONFIG_URL = os.environ.get(
+    "KITTU_CONFIG_URL",
+    "https://raw.githubusercontent.com/sakshamvibesyt/Sem_KITTUBOT/main/KITTUBOT/config.py",
+).strip()
+VIDEO_URL_REFRESH_SECONDS = max(
+    300, int(os.environ.get("VIDEO_URL_REFRESH_SECONDS", "900") or 900)
+)
+
+
+async def refresh_start_video_urls():
+    global START_VIDEO_URLS
+    try:
+        timeout = aiohttp.ClientTimeout(total=12)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(KITTU_CONFIG_URL) as response:
+                response.raise_for_status()
+                source = await response.text()
+        match = re.search(
+            r"START_IMG_URL\s*:[^=]*=\s*(\[[\s\S]*?\])",
+            source,
+        )
+        if not match:
+            raise ValueError("START_IMG_URL list was not found in KITTUBOT config")
+        urls = ast.literal_eval(match.group(1))
+        urls = [
+            url.strip() for url in urls
+            if isinstance(url, str) and url.strip().startswith(("https://", "http://"))
+        ]
+        if not urls:
+            raise ValueError("KITTUBOT config returned an empty video URL list")
+        START_VIDEO_URLS = urls
+        log.info("Synced %s start video URLs from KITTUBOT GitHub config", len(urls))
+    except Exception as ex:
+        log.warning(
+            "Could not refresh KITTUBOT video URLs; keeping %s fallback URLs: %s",
+            len(START_VIDEO_URLS), ex,
+        )
+
+
+async def refresh_video_urls_periodically():
+    while True:
+        await asyncio.sleep(VIDEO_URL_REFRESH_SECONDS)
+        await refresh_start_video_urls()
+
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("main")
@@ -33,6 +98,21 @@ states = {}
 # Control-panel access is separate from the connected user accounts.
 # OWNER_ID must be set explicitly in Render environment variables.
 admins = db.db.zyra_panel_admins
+bot_start_users = db.db.zyra_bot_start_users
+
+
+async def send_logger_log(text):
+    """Send a formatted event to the configured logger group; logging must never break bot features."""
+    if not LOGGER_GROUP_ID:
+        return
+    try:
+        await bot.send_message(LOGGER_GROUP_ID, text, parse_mode="html", link_preview=False)
+    except Exception as ex:
+        log.warning("Could not send logger-group event: %s", ex)
+
+
+def display_name(doc):
+    return html.escape(str(doc.get("name") or doc.get("first_name") or doc.get("_id") or "Unknown"))
 
 async def is_owner(uid):
     return bool(OWNER_ID and uid == OWNER_ID)
@@ -63,18 +143,27 @@ async def start_web():
     log.info("listening on %s", PORT)
 
 
-WELCOME_TEXT = (
-    "<b>✦ 𝐙𝐘𝐑𝐀 𝐔𝐒𝐄𝐑𝐁𝐎𝐓 ✦</b>\n"
-    "<i>Personal Telegram workspace</i>\n\n"
-    "╭─── ⟡ <b>WELCOME</b> ⟡ ───╮\n"
-    "│  Your tools. Your settings. Your control.\n"
-    "╰────────────────────╯\n\n"
-    "▸ Add your own Telegram account to get started.\n"
-    "▸ Manage commands and plugins from one place.\n"
-    "▸ Use /help to explore available controls.\n\n"
-    "<i>Keep your OTP and 2-step verification password private. "
-    "Only connect an account you own.</i>"
-)
+def build_welcome_text(user_name="there"):
+    """Create a short personalized preview with Telegram's expandable details."""
+    safe_name = html.escape((user_name or "there").strip())
+    return (
+        f"<b>✦ 𝐙𝐘𝐑𝐀 𝐔𝐒𝐄𝐑𝐁𝐎𝐓 ✦</b>\n"
+        f"💜 <b>Welcome, {safe_name}!</b>\n"
+        "👑 Owner: <a href=\"https://t.me/coderxsem\">Saksham</a> · <code>@coderxsem</code>\n"
+        "<i>Your personal Telegram workspace is ready.</i>\n\n"
+        "<blockquote expandable>"
+        "╭─── ⟡ <b>QUICK START</b> ⟡ ───╮\n"
+        "✦ Add your Telegram account using <b>ADD ACCOUNT</b>.\n"
+        "✦ Open <b>HELP CENTER</b> to explore commands and tools.\n"
+        "✦ Use the buttons below to navigate Zyra.\n"
+        "╰────────────────────╯\n\n"
+        "<b>Features</b>\n"
+        "▸ Account & session management\n"
+        "▸ Text utilities and personal tools\n"
+        "▸ Help, settings and plugin controls\n\n"
+        "<i>Security note: never share your Telegram login code or 2-step verification password. Connect only accounts you own.</i>"
+        "</blockquote>"
+    )
 
 HELP_TEXT = (
     "<b>✦ 𝐙𝐘𝐑𝐀 • 𝐇𝐄𝐋𝐏 𝐂𝐄𝐍𝐓𝐄𝐑 ✦</b>\n"
@@ -91,7 +180,10 @@ HELP_TEXT = (
     "<code>.help</code> · full userbot command list\n"
     "<code>.plugins</code> is available in the bot menu as <code>/plugins</code>.\n\n"
     "<i>Tap a category below for examples and usage.</i>\n\n"
-    "<i>Privileged owner/admin controls are shown only inside the authorized control panel.</i>"
+    "<b>OWNER PANEL</b>\n<code>/addadmin user_id</code> · add trusted admin (owner only)\n"
+    "<code>/removeadmin user_id</code> · remove trusted admin (owner only)\n"
+    "<code>/admins</code> · list panel admins\n"
+    "<code>/myid</code> · show your Telegram numeric ID"
 )
 
 HELP_SECTIONS = {
@@ -105,6 +197,9 @@ HELP_SECTIONS = {
         "<code>/prefix .</code> — change userbot command prefix\n"
         "<code>/plugins</code> — enable/disable installed plugins\n"
         "<code>/cancel</code> — cancel an in-progress login\n"
+        "<code>/addadmin user_id</code> — owner-only: add trusted panel admin\n"
+        "<code>/removeadmin user_id</code> — owner-only: remove panel admin\n"
+        "<code>/admins</code> — list panel admins\n\n"
         "<i>Only connect accounts you own. Keep OTP and 2-step password private.</i>"
     ),
     b"help_tools": (
@@ -186,6 +281,14 @@ def section_buttons():
 
 
 async def send_start_menu(chat_id, reply_to=None):
+    # Personalize the visible welcome line with the Telegram user's first name.
+    try:
+        user = await bot.get_entity(chat_id)
+        user_name = getattr(user, "first_name", None) or getattr(user, "title", None) or "there"
+    except Exception:
+        user_name = "there"
+    welcome_text = build_welcome_text(user_name)
+
     # Prefer a sticker message saved through this bot; this works with Telethon
     # and survives redeploys when MongoDB is configured.
     try:
@@ -199,49 +302,122 @@ async def send_start_menu(chat_id, reply_to=None):
             await bot.send_file(chat_id, START_STICKER_ID, reply_to=reply_to)
     except Exception as ex:
         log.warning("start sticker could not be sent; send a sticker directly to this bot to save it: %s", ex)
-    # Use a configured MP4/GIF animation when available; otherwise use the static welcome image.
+    # Prefer the rotating KITTUBOT media as the actual welcome media, not as a
+    # separate link-preview message followed by the old static image.
+    random_video = random.choice(START_VIDEO_URLS) if START_VIDEO_URLS else ""
+    if random_video:
+        temp_path = None
+        try:
+            timeout = aiohttp.ClientTimeout(total=25, connect=8, sock_read=15)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(random_video, allow_redirects=True) as response:
+                    response.raise_for_status()
+                    content_type = (response.headers.get("Content-Type") or "").lower()
+                    length = int(response.headers.get("Content-Length") or 0)
+                    if length > 45 * 1024 * 1024:
+                        raise ValueError("KITTUBOT media is larger than 45 MB")
+                    body = await response.read()
+            # MP4 files normally contain the ftyp signature near the beginning.
+            if not ("video/" in content_type or "octet-stream" in content_type or b"ftyp" in body[:64]):
+                raise ValueError("KITTUBOT URL did not return a direct video file")
+            if len(body) > 45 * 1024 * 1024:
+                raise ValueError("KITTUBOT media is larger than 45 MB")
+            if len(body) < 1024:
+                raise ValueError("KITTUBOT media response was too small")
+            with tempfile.NamedTemporaryFile(prefix="zyra_start_", suffix=".mp4", delete=False) as handle:
+                handle.write(body)
+                temp_path = handle.name
+            await bot.send_file(
+                chat_id, temp_path, caption=welcome_text, buttons=start_buttons(),
+                parse_mode="html", reply_to=reply_to, supports_streaming=True,
+            )
+            return
+        except Exception as ex:
+            log.warning("Could not send KITTUBOT video as welcome media; trying preview fallback: %s", ex)
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
+        # If the URL is a preview page rather than a direct media file, keep the
+        # KITTUBOT preview and the menu in one message; do not send the old image too.
+        try:
+            video_caption = f'<a href="{html.escape(random_video, quote=True)}">&#8203;</a>' + welcome_text
+            await bot.send_message(
+                chat_id, video_caption, buttons=start_buttons(), parse_mode="html",
+                link_preview=True, reply_to=reply_to,
+            )
+            return
+        except Exception as ex:
+            log.warning("KITTUBOT preview fallback failed: %s", ex)
+
     media_path = WELCOME_ANIMATION if WELCOME_ANIMATION and os.path.isfile(WELCOME_ANIMATION) else WELCOME_IMAGE
     try:
         await bot.send_file(
             chat_id,
             media_path,
-            caption=WELCOME_TEXT,
+            caption=welcome_text,
             buttons=start_buttons(),
             parse_mode="html",
             reply_to=reply_to,
         )
     except Exception as ex:
         log.warning("welcome media could not be sent; using text fallback: %s", ex)
-        await bot.send_message(chat_id, WELCOME_TEXT, buttons=start_buttons(), parse_mode="html", reply_to=reply_to)
+        await bot.send_message(chat_id, welcome_text, buttons=start_buttons(), parse_mode="html", reply_to=reply_to)
 
 
-@bot.on(events.NewMessage(pattern=r"^/start$"))
+
+
+@bot.on(events.NewMessage(pattern=r"^/start(?:@\w+)?(?:\s+.*)?$"))
 async def cmd_start(e):
+    """Show the welcome menu when someone sends /start."""
     log.info("/start received user_id=%s", e.sender_id)
+    # Log only the first /start from each Telegram user, avoiding repeated spam.
+    try:
+        sender = await e.get_sender()
+        first_name = (getattr(sender, "first_name", None) or "Telegram user").strip()
+        username = getattr(sender, "username", None)
+        start_record = await bot_start_users.find_one({"_id": int(e.sender_id)})
+        if not start_record:
+            await bot_start_users.update_one(
+                {"_id": int(e.sender_id)},
+                {"$set": {"name": first_name, "username": username}},
+                upsert=True,
+            )
+            username_line = f"\n♧ Username: @{html.escape(username)}" if username else "\n♧ Username: <i>not set</i>"
+            total_started = await bot_start_users.count_documents({})
+            await send_logger_log(
+                "🪄 <b>NEW BOT USER</b>\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                f"👤 Name: <b>{html.escape(first_name)}</b>\n"
+                f"🆔 ID: <code>{e.sender_id}</code>"
+                f"{username_line}\n"
+                f"📊 First-time users: <b>{total_started}</b>\n"
+                "✨ <i>Zyra just got a new visitor!</i>"
+            )
+    except Exception as ex:
+        log.warning("Could not record /start event: %s", ex)
+    # A reaction is optional; failure must never prevent the welcome menu.
     try:
         await bot(functions.messages.SendReactionRequest(
             peer=e.peer_id,
             msg_id=e.id,
-            reaction=[types.ReactionEmoji(emoticon="👋")],
+            reaction=[types.ReactionEmoji(emoticon="❤️")],
         ))
     except Exception as ex:
-        log.warning("Start reaction failed (Telegram may not allow this chat/reaction): %s", ex)
+        log.warning("Start reaction failed; continuing to welcome menu: %s", ex)
     await send_start_menu(e.chat_id)
 
-
-def is_welcome_media_message(e):
-    """Accept static/animated stickers, GIFs, and short videos sent to the panel bot."""
-    msg = getattr(e, "message", None)
-    if not e.is_private or not msg or not msg.media:
-        return False
-    doc = getattr(msg, "document", None)
-    if not doc:
-        return False
-    attrs = getattr(doc, "attributes", []) or []
-    if any(isinstance(a, (types.DocumentAttributeSticker, types.DocumentAttributeAnimated)) for a in attrs):
-        return True
-    mime = (getattr(doc, "mime_type", "") or "").lower()
-    return mime in ("video/mp4", "image/gif")
+def is_welcome_media_message(event):
+    """Match media sent privately by the configured owner for welcome-sticker saving."""
+    return bool(
+        OWNER_ID
+        and event.is_private
+        and event.sender_id == OWNER_ID
+        and event.media
+        and not getattr(event, "via_bot_id", None)
+    )
 
 
 @bot.on(events.NewMessage(func=is_welcome_media_message))
@@ -425,7 +601,7 @@ async def cmd_prefix(e):
     c = manager.clients.get(uid)
     if c:
         c.prefix = new
-    await e.reply("Prefix set: <code>%s</code>" % new)
+    await e.reply("Prefix saved: <code>%s</code>\nExisting connected sessions may need reconnect/restart for every plugin handler to use the new prefix." % new)
 
 
 @bot.on(events.NewMessage(pattern=r"^/plugins$"))
@@ -560,6 +736,7 @@ async def finish_login(uid, e, client, phone):
         await e.reply("Saving...")
         me = await client.get_me()
         session = client.session.save()
+        previous_user = await db.users.find_one({"_id": uid})
         await db.users.update_one(
             {"_id": uid},
             {"$set": {
@@ -577,6 +754,24 @@ async def finish_login(uid, e, client, phone):
         doc = await db.users.find_one({"_id": uid})
         await manager.spawn(doc)
         states.pop(uid, None)
+        if not previous_user:
+            login_total = await db.users.count_documents({})
+            await send_logger_log(
+                "🔐 <b>NEW ACCOUNT LOGIN</b>\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                f"👤 Account: <b>{html.escape(me.first_name or str(me.id))}</b>\n"
+                f"🆔 Telegram ID: <code>{me.id}</code>\n"
+                f"🧩 Added by user ID: <code>{uid}</code>\n"
+                f"📊 Connected accounts: <b>{login_total}</b>\n"
+                "✅ <i>Account saved and session started.</i>"
+            )
+        else:
+            await send_logger_log(
+                "♻️ <b>ACCOUNT SESSION REFRESHED</b>\n"
+                f"👤 Account: <b>{html.escape(me.first_name or str(me.id))}</b>\n"
+                f"🆔 Telegram ID: <code>{me.id}</code>\n"
+                "✅ <i>Session refreshed successfully.</i>"
+            )
         await e.reply(
             "✅ Login ho gaya: <b>%s</b>. Prefix <code>.</code> — <code>.ping</code> try karo."
             % me.first_name
@@ -588,18 +783,51 @@ async def finish_login(uid, e, client, phone):
 
 async def main():
     await start_web()
+    await refresh_start_video_urls()
     await bot.start(bot_token=BOT_TOKEN)
     await manager.boot_all()
+    # Deployment summary plus one profile-status card per saved account.
+    try:
+        total_accounts = await db.users.count_documents({})
+        online_accounts = len(manager.clients)
+        total_bot_users = await bot_start_users.count_documents({})
+        await send_logger_log(
+            "🚀 <b>ZYRA USERBOT · DEPLOY ONLINE</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "💜 Status: <b>ONLINE</b>\n"
+            f"👥 Saved accounts: <b>{total_accounts}</b>\n"
+            f"🟢 Active clients: <b>{online_accounts}</b>\n"
+            f"📨 Bot users recorded: <b>{total_bot_users}</b>\n"
+            "⚡ <i>All saved profiles are being checked below.</i>"
+        )
+        async for account in db.users.find({}):
+            uid = account.get("_id")
+            is_online = uid in manager.clients
+            status = "🟢 ONLINE" if is_online else "🟠 SAVED · NOT ACTIVE"
+            await send_logger_log(
+                "👤 <b>PROFILE LOADED</b>\n"
+                f"✦ Name: <b>{display_name(account)}</b>\n"
+                f"🆔 User ID: <code>{uid}</code>\n"
+                f"📡 Status: <b>{status}</b>\n"
+                "━━━━━━━━━━━━━━━━━━"
+            )
+    except Exception as ex:
+        log.warning("Could not send deploy summary to logger group: %s", ex)
     monitor_task = asyncio.create_task(manager.monitor_connections(), name="client-reconnect-monitor")
+    video_refresh_task = asyncio.create_task(
+        refresh_video_urls_periodically(), name="kittu-video-url-refresh"
+    )
     log.info("ready")
     try:
         await bot.run_until_disconnected()
     finally:
         monitor_task.cancel()
-        try:
-            await monitor_task
-        except asyncio.CancelledError:
-            pass
+        video_refresh_task.cancel()
+        for task in (monitor_task, video_refresh_task):
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 if __name__ == "__main__":
