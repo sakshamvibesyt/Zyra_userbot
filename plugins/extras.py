@@ -75,36 +75,100 @@ def setup(client):
     async def _mention_post(event, members, text, title):
         if not members:
             return await event.edit("Koi eligible member nahi mila.")
-        # Telegram messages have a size limit; cap one command to 30 mentions.
+        # Send one quote-styled message per member, with a hard cap and delay.
         members = members[:30]
-        mentions = []
+        intro = html.escape((text or "Good morning").strip())
+        await event.delete()
+        sent = 0
         for member in members:
-            name = html.escape((getattr(member, "first_name", None) or getattr(member, "title", None) or "Member").strip())
-            mentions.append('<a href="tg://user?id=%s">%s</a>' % (member.id, name))
-        intro = html.escape((text or "Everyone, please check this message!").strip())
-        body = "\n".join(mentions)
-        await event.edit("<b>%s</b>\n%s\n\n%s\n<i>Showing up to 30 members per command.</i>" % (title, intro, body))
+            raw_name = (getattr(member, "first_name", None) or getattr(member, "title", None) or "Member").strip()
+            name = html.escape(raw_name)
+            mention = '<a href="tg://user?id=%s">%s</a>' % (member.id, name)
+            body = '<blockquote>%s\n%s</blockquote>' % (intro, mention)
+            try:
+                await client.send_message(event.chat_id, body, parse_mode="html")
+                sent += 1
+                await asyncio.sleep(1.0)
+            except Exception:
+                # Continue if a single member's message cannot be delivered.
+                continue
+        try:
+            await client.send_message(event.chat_id, "✦ Tag complete: %s/%s messages sent (max 30 per command)." % (sent, len(members)))
+        except Exception:
+            pass
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"tagall(?:\s+([\s\S]+))?$", outgoing=True))
     async def tagall_cmd(e):
-        text = e.pattern_match.group(1) or "Everyone, please check this message!"
+        text = e.pattern_match.group(1) or "Good morning"
         members = await _collect_members(e, admins_only=False, limit=100)
         if members is not None:
             await _mention_post(e, members, text, "🔔 TAG ALL")
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"(?:atag|atah)(?:\s+([\s\S]+))?$", outgoing=True))
     async def tag_admins_cmd(e):
-        text = e.pattern_match.group(1) or "Admins, please check this message!"
+        text = e.pattern_match.group(1) or "Good morning admins"
         members = await _collect_members(e, admins_only=True, limit=100)
         if members is not None:
             await _mention_post(e, members, text, "⚙️ TAG ADMINS")
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"onetag(?:\s+([\s\S]+))?$", outgoing=True))
     async def onetag_cmd(e):
-        text = e.pattern_match.group(1) or "One-time member mention"
+        text = e.pattern_match.group(1) or "Hello"
         members = await _collect_members(e, admins_only=False, limit=30)
         if members is not None:
             await _mention_post(e, members, text, "🏷 ONE-TAG")
+
+    # Configurable, bounded group fun-message sequence. It deliberately does not
+    # target/repeatedly mention a person. Maximum 3 messages and .stop cancels it.
+    raid_messages = database.db.zyra_raid_messages
+    _raid_tasks = {}
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"addraid\s+([\s\S]+)$", outgoing=True))
+    async def add_raid_message(e):
+        message = (e.pattern_match.group(1) or "").strip()
+        if not message:
+            return await e.edit("Usage: <code>%saddraid Your friendly group message</code>" % html.escape(client.prefix))
+        if len(message) > 500:
+            return await e.edit("Message limit: 500 characters.")
+        await raid_messages.update_one({"uid": uid}, {"$set": {"message": message}}, upsert=True)
+        await e.edit("<b>✦ Raid message saved</b>\nUse <code>%sraid 3</code> in a group to send a short, non-targeted fun burst. Max 10 messages." % html.escape(client.prefix))
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"raid(?:\s+(\d+))?$", outgoing=True))
+    async def raid_message(e):
+        if not e.is_group:
+            return await e.edit("Ye command sirf group mein use karo.")
+        count = int(e.pattern_match.group(1) or 1)
+        count = max(1, min(count, 10))
+        doc = await raid_messages.find_one({"uid": uid})
+        message = (doc or {}).get("message")
+        if not message:
+            return await e.edit("Pehle message set karo: <code>%saddraid Your friendly group message</code>" % html.escape(client.prefix))
+        key = e.chat_id
+        existing = _raid_tasks.get(key)
+        if existing and not existing.done():
+            return await e.edit("Is group mein sequence already chal raha hai. Band karne ke liye <code>%sstop</code> bhejo." % html.escape(client.prefix))
+        await e.delete()
+        async def _run_sequence():
+            try:
+                for _ in range(count):
+                    await client.send_message(e.chat_id, message)
+                    await asyncio.sleep(1.5)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+            finally:
+                _raid_tasks.pop(key, None)
+        _raid_tasks[key] = asyncio.create_task(_run_sequence())
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"stop$", outgoing=True))
+    async def stop_raid(e):
+        task = _raid_tasks.get(e.chat_id)
+        if task and not task.done():
+            task.cancel()
+            await e.edit("🛑 Message sequence stopped.")
+        else:
+            await e.edit("Is group mein koi message sequence active nahi hai.")
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"help$", outgoing=True))
     async def help_cmd(e):
@@ -151,9 +215,12 @@ def setup(client):
             f"<code>{prefix}stop word</code> · remove filter\n"
             f"<code>{prefix}filters</code> · list current-chat filters\n\n"
             "<b>⚒ GROUP ADMIN</b>\n"
-            f"<code>{prefix}tagall [text]</code> · mention up to 30 group members\n"
+            f"<code>{prefix}tagall [text]</code> · send a separate quote-style message to up to 30 group members\n"
             f"<code>{prefix}atag [text]</code> / <code>{prefix}atah [text]</code> · mention admins\n"
             f"<code>{prefix}onetag [text]</code> · one-time compact mention\n"
+            f"<code>{prefix}addraid message</code> · save a friendly group message\n"
+            f"<code>{prefix}raid [1-3]</code> · short, non-targeted message sequence\n"
+            f"<code>{prefix}stop</code> · stop the active sequence\n"
             f"<code>{prefix}adminhelp</code> · admin guide\n"
             f"Reply to target: <code>{prefix}ban</code>, <code>{prefix}unban</code>, <code>{prefix}mute</code>, <code>{prefix}unmute</code>, <code>{prefix}kick</code>, <code>{prefix}del</code>\n"
             f"<code>{prefix}pin</code> · pin replied message\n"
