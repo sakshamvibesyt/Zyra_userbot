@@ -49,7 +49,6 @@ def setup(client):
     notes = database.db.zyra_notes
     replies = database.db.zyra_replies
     filters = database.db.zyra_filters
-    raid_messages = database.db.zyra_raid_messages
     afk_settings = database.db.zyra_afk_settings
     afk_states = database.db.zyra_afk_states
 
@@ -97,18 +96,8 @@ def setup(client):
             f"<code>{prefix}filter word | reply</code> · add current-chat filter\n"
             f"<code>{prefix}stop word</code> · remove filter\n"
             f"<code>{prefix}filters</code> · list current-chat filters\n\n"
-            "<b>🔁 MESSAGE ROTATION</b>\n"
-            f"<code>{prefix}addraid hello | good morning | welcome</code> · save up to 20 normal messages\n"
-            f"<code>{prefix}raid 5</code> · send up to 10 messages, paced every 2 seconds\n"
-            f"<code>{prefix}stop</code> · stop the current rotation\n\n"
-            "<i>Use for non-targeted, non-abusive messages only. Runs are capped to prevent flooding.</i>\n\n"
             "<b>⚒ GROUP ADMIN</b>\n"
-            f"<code>{prefix}adminhelp</code> · admin guide\n"
-            f"Reply to target: <code>{prefix}ban</code>, <code>{prefix}unban</code>, <code>{prefix}mute</code>, <code>{prefix}unmute</code>, <code>{prefix}kick</code>, <code>{prefix}del</code>\n"
-            f"<code>{prefix}pin</code> · pin replied message\n"
-            f"<code>{prefix}unpin</code> · unpin latest message\n"
-            f"<code>{prefix}purge 20</code> · delete recent messages (max 100)\n"
-            f"<code>{prefix}admins</code> · list group admins\n\n"
+            f"<code>{prefix}adminhelp</code> · admin command guide (for group moderators)\n\n"
             "<b>✦ AI</b>\n"
             f"<code>{prefix}ai question</code> · ask configured AI\n\n"
             "<b>━━━━━━━━━━━━━━━━━━</b>\n"
@@ -316,65 +305,31 @@ def setup(client):
         items = await filters.find({"uid": uid, "chat_id": e.chat_id}).to_list(length=50)
         await e.edit("<b>Chat filters</b>\n" + ("\n".join("• " + x["trigger"] for x in items) if items else "No filters in this chat."))
 
-    # Safe, paced custom-message rotation. Commands are outgoing, so only the
-    # account owner who typed the command can trigger it. No reply-targeting.
-    _raid_tasks = {}
 
-    @client.on(events.NewMessage(pattern=r"^" + p + r"addraid\s+([\s\S]+)$", outgoing=True))
-    async def add_raid_messages(e):
-        raw = e.pattern_match.group(1)
-        items = [part.strip() for part in raw.split("|") if part.strip()]
-        if not items:
-            return await e.edit("Usage: <code>%saddraid hello | good morning | welcome</code>" % client.prefix)
-        if len(items) > 20:
-            return await e.edit("Maximum 20 messages per command. Please split the list.")
-        if any(len(item) > 300 for item in items):
-            return await e.edit("Each message must be 300 characters or fewer.")
-        await raid_messages.update_one(
-            {"uid": uid, "chat_id": e.chat_id},
-            {"$set": {"messages": items}}, upsert=True
-        )
-        await e.edit("🎀 <b>Message rotation saved</b>\n"
-                     "Messages: <code>%d</code>\n" % len(items) +
-                     "They will cycle in order. Use <code>%sraid 5</code> to run a small, paced batch." % client.prefix)
-
-    @client.on(events.NewMessage(pattern=r"^" + p + r"raid(?:\s+(\d+))?$", outgoing=True))
-    async def run_raid_rotation(e):
-        count_text = e.pattern_match.group(1)
-        count = int(count_text) if count_text else 5
-        if count < 1 or count > 10:
-            return await e.edit("Count must be between 1 and 10 per run to prevent flooding.")
-        doc = await raid_messages.find_one({"uid": uid, "chat_id": e.chat_id})
-        items = (doc or {}).get("messages", [])
-        if not items:
-            return await e.edit("No messages saved. Use <code>%saddraid hello | good morning</code> first." % client.prefix)
-        key = (uid, e.chat_id)
-        old_task = _raid_tasks.get(key)
-        if old_task and not old_task.done():
-            return await e.edit("A rotation is already running here. Use <code>%sstop</code> first." % client.prefix)
+    @client.on(events.NewMessage(pattern=r"^" + p + r"tagall(?:\s+([\s\S]+))?$", outgoing=True))
+    async def tagall(e):
+        """Send one custom group notice and mention at most 20 members."""
+        if not e.is_group:
+            await e.edit("⚠️ <b>.tagall sirf group mein use karo.</b>", parse_mode="html")
+            return
+        custom = (e.pattern_match.group(1) or "").strip()
+        # Keep custom text as plain text so emojis, newlines, pipes and symbols don't break HTML parsing.
+        notice = custom[:1500] if custom else "📣 Group members, please check the chat!"
+        mentions = []
+        try:
+            async for participant in client.iter_participants(e.chat_id):
+                if getattr(participant, "bot", False) or getattr(participant, "deleted", False):
+                    continue
+                name = " ".join(x for x in [getattr(participant, "first_name", ""), getattr(participant, "last_name", "")] if x).strip() or "Member"
+                mentions.append(f"[{name}](tg://user?id={participant.id})")
+                if len(mentions) >= 20:
+                    break
+        except Exception:
+            await e.edit("⚠️ Members list read nahi ho paayi. Check group access/permissions.")
+            return
+        if not mentions:
+            await e.edit("⚠️ Is group ke members nahi mil paaye.")
+            return
+        # A single message only; cap mentions to avoid flooding large groups.
         await e.delete()
-        async def worker():
-            try:
-                for i in range(count):
-                    await client.send_message(e.chat_id, items[i % len(items)])
-                    if i < count - 1:
-                        await asyncio.sleep(2)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                pass
-            finally:
-                _raid_tasks.pop(key, None)
-        _raid_tasks[key] = asyncio.create_task(worker())
-
-    @client.on(events.NewMessage(pattern=r"^" + p + r"stop$", outgoing=True))
-    async def stop_raid_rotation(e):
-        key = (uid, e.chat_id)
-        task = _raid_tasks.get(key)
-        if task and not task.done():
-            task.cancel()
-            await e.edit("🛑 <b>Message rotation stopped.</b>")
-        else:
-            # Keep the existing `.stop word` filter-removal command unaffected.
-            await e.edit("No message rotation is running in this chat.")
-
+        await client.send_message(e.chat_id, notice + "\n\n" + " · ".join(mentions), link_preview=False, parse_mode="md")
