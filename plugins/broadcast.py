@@ -19,7 +19,8 @@ def setup(client):
     prefix = re.escape(client.prefix)
     uid = client.uid
     collection = __import__("db").db.zyra_broadcast_subscriptions
-    sessions = {}  # chat_id -> draft; wizard only lives while this client process runs
+    sessions = {}  # chat_id -> current wizard state
+    pending = {}   # chat_id -> ready-to-publish draft
     running = {"task": None, "stop": False}
 
     async def say(chat_id, text, buttons=None):
@@ -43,6 +44,9 @@ def setup(client):
         return [[Button.url(label, url)] for label, url in items] or None
 
     async def preview(chat_id, draft):
+        # Keep the real draft so command-based publishing works even if Telegram
+        # does not render the inline callback buttons on the preview controls.
+        pending[int(chat_id)] = draft
         source = None
         if draft.get("media_id"):
             source = await client.get_messages(draft["media_chat"], ids=draft["media_id"])
@@ -73,9 +77,11 @@ def setup(client):
         buttons = make_button_rows(draft.get("buttons", []))
         sent = failed = 0
         running["stop"] = False
+        stopped = False
         try:
             for dest in destinations:
                 if running["stop"]:
+                    stopped = True
                     break
                 target = int(dest["target_id"])
                 try:
@@ -107,7 +113,7 @@ def setup(client):
                 await status_message.edit(
                     "✦ <b>ZYRA PROMOTION REPORT</b> ✦\n━━━━━━━━━━━━━━━━━━\n"
                     f"✅ Sent: <code>{sent}</code>\n❌ Failed: <code>{failed}</code>\n"
-                    f"{'🛑 Stopped' if running['stop'] else '🏁 Finished'}\n━━━━━━━━━━━━━━━━━━",
+                    f"{'🛑 Stopped' if stopped else '🏁 Finished'}\n━━━━━━━━━━━━━━━━━━",
                     parse_mode="html")
             except Exception:
                 pass
@@ -156,7 +162,25 @@ def setup(client):
 
         if action == "cancel":
             sessions.pop(int(e.chat_id), None)
+            pending.pop(int(e.chat_id), None)
             return await send_status(e, "✖ Promotion draft cancelled.")
+        if root == "promotion" and action == "publish":
+            draft = pending.get(int(e.chat_id))
+            if not draft:
+                return await send_status(e, "⚠️ Koi ready promotion nahi hai. Pehle <code>.promotion</code> se post banao.")
+            if running["task"] and not running["task"].done():
+                return await send_status(e, "⏳ Promotion already send ho rahi hai. Finish hone do ya <code>.broadcast stop</code> use karo.")
+            pending.pop(int(e.chat_id), None)
+            status = await client.send_message(e.chat_id, "🚀 <b>Promotion started…</b>", parse_mode="html")
+            running["task"] = asyncio.create_task(deliver(draft, status))
+            return await send_status(e, "✅ Promotion publish command accept ho gayi.")
+        if root == "promotion" and action in ("preview", "status"):
+            if action == "status":
+                return await send_status(e, f"Promotion draft: <b>{'Ready to publish' if int(e.chat_id) in pending else 'None'}</b>\nSending: <b>{'Yes' if running['task'] and not running['task'].done() else 'No'}</b>")
+            draft = pending.get(int(e.chat_id))
+            if not draft:
+                return await send_status(e, "⚠️ Koi ready promotion nahi hai. Pehle <code>.promotion</code> se post banao.")
+            return await preview(e.chat_id, draft)
         if root == "promotion" or (root == "broadcast" and not action):
             if running["task"] and not running["task"].done():
                 return await send_status(e, "⏳ A promotion is already being sent. Wait for it to finish or use <code>.broadcast stop</code>.")
@@ -211,16 +235,17 @@ def setup(client):
             await e.answer("Publishing…")
             msg_id = int(e.data.decode().split(":", 1)[1])
             preview_msg = await client.get_messages(e.chat_id, ids=msg_id)
-            # Rebuild draft from the preview message; buttons copied from preview.
-            rows = []
-            for row in (getattr(preview_msg, "buttons", None) or []):
-                for button in row:
-                    if getattr(button, "url", None) and getattr(button, "text", None):
-                        rows.append((str(button.text), str(button.url)))
-            draft = {"media_chat": int(e.chat_id), "media_id": None, "caption": preview_msg.raw_text or "", "buttons": rows}
-            # If preview is media, the preview itself is the source.
-            if preview_msg.media:
-                draft["media_id"] = int(preview_msg.id)
+            # Prefer the saved draft; reconstruct from the preview only as a fallback.
+            draft = pending.pop(int(e.chat_id), None)
+            if not draft:
+                rows = []
+                for row in (getattr(preview_msg, "buttons", None) or []):
+                    for button in row:
+                        if getattr(button, "url", None) and getattr(button, "text", None):
+                            rows.append((str(button.text), str(button.url)))
+                draft = {"media_chat": int(e.chat_id), "media_id": None, "caption": preview_msg.raw_text or "", "buttons": rows}
+                if preview_msg.media:
+                    draft["media_id"] = int(preview_msg.id)
             if running["task"] and not running["task"].done():
                 return await e.respond("A promotion is already running.")
             status = await client.send_message(e.chat_id, "🚀 <b>Promotion started…</b>", parse_mode="html")
