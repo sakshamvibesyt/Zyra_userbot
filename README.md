@@ -132,3 +132,30 @@ Note: Telegram permissions and client/account limitations can prevent inline but
 - The sender waits between destinations and respects Telegram FloodWait responses. Delivery can still fail due to permissions, blocks, or Telegram limits.
 
 Keep existing Render environment variables unchanged. The plugin uses the project's existing MongoDB connection.
+
+
+## DM auto-reply placeholders
+
+`DM_TEXT` supports these placeholders, which are replaced separately for each person who messages a connected account:
+
+- `{first_name}` — their first name
+- `{name}` — same as first name
+- `{username}` — their `@username` (empty if not set)
+- `{mention}` — clickable mention
+- `{id}` — their Telegram numeric ID
+
+Example: `𓆩♡𓆪 𝐇𝐞𝐲𝐲 {first_name} 🎀`
+
+Optional DM buttons use `PROMO_LINKS` in `Label|https://example.com` format, separated by commas.
+
+## Promotion Studio
+
+- `.promotion` — compose media, caption and URL buttons
+- During the wizard, use `/skip` to skip media/caption/buttons and `/done` to finish buttons
+- `.promotion publish` — publish the latest ready draft if the inline publish button is missing
+- `.promotion preview` — reopen preview; `.promotion status` — draft/send status; `.promotion cancel` — cancel the draft
+- `.broadcast here` / `.broadcast leave` — opt the current group in/out
+- `.broadcast status` — opted-in destination counts; `.broadcast stop` — stop an active send
+- DM recipients must opt in with `.broadcast subscribe` and can stop with `.broadcast unsubscribe`
+
+KITTUBOT start media URL list is refreshed from `KITTU_CONFIG_URL` every `VIDEO_URL_REFRESH_SECONDS` seconds. If the source URLs are not direct downloadable videos, Zyra falls back to a hidden-link preview and then to local welcome media if preview sending also fails.

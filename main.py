@@ -1,4 +1,4 @@
-import asyncio, logging, os, time, random, re, ast, html
+import asyncio, logging, os, time, random, re, ast, html, tempfile
 import aiohttp
 
 from aiohttp import web
@@ -301,23 +301,55 @@ async def send_start_menu(chat_id, reply_to=None):
             await bot.send_file(chat_id, START_STICKER_ID, reply_to=reply_to)
     except Exception as ex:
         log.warning("start sticker could not be sent; send a sticker directly to this bot to save it: %s", ex)
-    # Pick a random remote video for each /start using the reference repo's
-    # hidden-link preview technique. Fall back to the local media if preview fails.
+    # Prefer the rotating KITTUBOT media as the actual welcome media, not as a
+    # separate link-preview message followed by the old static image.
     random_video = random.choice(START_VIDEO_URLS) if START_VIDEO_URLS else ""
     if random_video:
-        video_caption = f'<a href="{random_video}">&#8203;</a>' + welcome_text
+        temp_path = None
         try:
-            await bot.send_message(
-                chat_id,
-                video_caption,
-                buttons=start_buttons(),
-                parse_mode="html",
-                link_preview=True,
-                reply_to=reply_to,
+            timeout = aiohttp.ClientTimeout(total=25, connect=8, sock_read=15)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(random_video, allow_redirects=True) as response:
+                    response.raise_for_status()
+                    content_type = (response.headers.get("Content-Type") or "").lower()
+                    length = int(response.headers.get("Content-Length") or 0)
+                    if length > 45 * 1024 * 1024:
+                        raise ValueError("KITTUBOT media is larger than 45 MB")
+                    body = await response.read()
+            # MP4 files normally contain the ftyp signature near the beginning.
+            if not ("video/" in content_type or "octet-stream" in content_type or b"ftyp" in body[:64]):
+                raise ValueError("KITTUBOT URL did not return a direct video file")
+            if len(body) > 45 * 1024 * 1024:
+                raise ValueError("KITTUBOT media is larger than 45 MB")
+            if len(body) < 1024:
+                raise ValueError("KITTUBOT media response was too small")
+            with tempfile.NamedTemporaryFile(prefix="zyra_start_", suffix=".mp4", delete=False) as handle:
+                handle.write(body)
+                temp_path = handle.name
+            await bot.send_file(
+                chat_id, temp_path, caption=welcome_text, buttons=start_buttons(),
+                parse_mode="html", reply_to=reply_to, supports_streaming=True,
             )
             return
         except Exception as ex:
-            log.warning("rotating start video preview failed; using local welcome media: %s", ex)
+            log.warning("Could not send KITTUBOT video as welcome media; trying preview fallback: %s", ex)
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
+        # If the URL is a preview page rather than a direct media file, keep the
+        # KITTUBOT preview and the menu in one message; do not send the old image too.
+        try:
+            video_caption = f'<a href="{html.escape(random_video, quote=True)}">&#8203;</a>' + welcome_text
+            await bot.send_message(
+                chat_id, video_caption, buttons=start_buttons(), parse_mode="html",
+                link_preview=True, reply_to=reply_to,
+            )
+            return
+        except Exception as ex:
+            log.warning("KITTUBOT preview fallback failed: %s", ex)
 
     media_path = WELCOME_ANIMATION if WELCOME_ANIMATION and os.path.isfile(WELCOME_ANIMATION) else WELCOME_IMAGE
     try:
