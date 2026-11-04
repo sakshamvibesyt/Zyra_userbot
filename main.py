@@ -1,5 +1,4 @@
-import asyncio, logging, os, time, random, re, ast, html, tempfile
-import aiohttp
+import asyncio, logging, os, time, random, re, html
 
 from aiohttp import web
 from telethon import TelegramClient, events, Button, functions, types
@@ -23,71 +22,29 @@ ADD_TO_GROUP_URL = os.environ.get("ADD_TO_GROUP_URL", "https://t.me/?startgroup=
 START_STICKER_ID = os.environ.get("START_STICKER_ID", "").strip()
 OWNER_ID = int(os.environ.get("OWNER_ID", "0") or 0)
 LOGGER_GROUP_ID = int(os.environ.get("LOGGER_GROUP_ID", "0") or 0)
-WELCOME_IMAGE = os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.png")
-WELCOME_ANIMATION = os.environ.get("WELCOME_ANIMATION", os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.mp4")).strip()
-
-# Rotating start video URLs adapted from the reference KittuBot repository.
-START_VIDEO_URLS = [
-    "https://yukiapi.site/file/6CXCn2De",
-    "https://yukiapi.site/file/YWwD9Qr8",
-    "https://yukiapi.site/file/rsCNQf0j",
-    "https://yukiapi.site/file/dWFtIZny",
-    "https://yukiapi.site/file/eYtZuZwz",
-    "https://yukiapi.site/file/euiiZogt",
-    "https://yukiapi.site/file/UcidJrAQ",
-    "https://yukiapi.site/file/AtKzDFZU",
-    "https://yukiapi.site/file/nGA7YMtQ",
-    "https://yukiapi.site/file/aQSUKqZk",
-    "https://yukiapi.site/file/ns7QmFhQ",
-    "https://yukiapi.site/file/tZCMxz2a",
-]
-
-# Auto-sync the START_IMG_URL list from KITTUBOT's GitHub config.
-# The built-in URLs above remain a fallback if GitHub is unavailable.
-KITTU_CONFIG_URL = os.environ.get(
-    "KITTU_CONFIG_URL",
-    "https://raw.githubusercontent.com/sakshamvibesyt/Sem_KITTUBOT/main/KITTUBOT/config.py",
-).strip()
-VIDEO_URL_REFRESH_SECONDS = max(
-    300, int(os.environ.get("VIDEO_URL_REFRESH_SECONDS", "900") or 900)
-)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ASSETS_DIR = os.path.join(BASE_DIR, "assets")
+WELCOME_IMAGE = os.path.join(ASSETS_DIR, "zyra_welcome.png")
+WELCOME_ANIMATION = os.environ.get("WELCOME_ANIMATION", os.path.join(ASSETS_DIR, "zyra_welcome.mp4")).strip()
+START_VIDEOS_DIR = os.path.join(ASSETS_DIR, "videos")
 
 
-async def refresh_start_video_urls():
-    global START_VIDEO_URLS
+def choose_local_welcome_video():
+    """Choose a bundled welcome video without downloading anything at /start."""
     try:
-        timeout = aiohttp.ClientTimeout(total=12)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(KITTU_CONFIG_URL) as response:
-                response.raise_for_status()
-                source = await response.text()
-        match = re.search(
-            r"START_IMG_URL\s*:[^=]*=\s*(\[[\s\S]*?\])",
-            source,
+        videos = sorted(
+            os.path.join(START_VIDEOS_DIR, name)
+            for name in os.listdir(START_VIDEOS_DIR)
+            if name.lower().endswith((".mp4", ".mov", ".m4v"))
+            and os.path.isfile(os.path.join(START_VIDEOS_DIR, name))
         )
-        if not match:
-            raise ValueError("START_IMG_URL list was not found in KITTUBOT config")
-        urls = ast.literal_eval(match.group(1))
-        urls = [
-            url.strip() for url in urls
-            if isinstance(url, str) and url.strip().startswith(("https://", "http://"))
-        ]
-        if not urls:
-            raise ValueError("KITTUBOT config returned an empty video URL list")
-        START_VIDEO_URLS = urls
-        log.info("Synced %s start video URLs from KITTUBOT GitHub config", len(urls))
-    except Exception as ex:
-        log.warning(
-            "Could not refresh KITTUBOT video URLs; keeping %s fallback URLs: %s",
-            len(START_VIDEO_URLS), ex,
-        )
-
-
-async def refresh_video_urls_periodically():
-    while True:
-        await asyncio.sleep(VIDEO_URL_REFRESH_SECONDS)
-        await refresh_start_video_urls()
-
+    except OSError:
+        videos = []
+    if videos:
+        return random.choice(videos)
+    if WELCOME_ANIMATION and os.path.isfile(WELCOME_ANIMATION):
+        return WELCOME_ANIMATION
+    return None
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("main")
@@ -302,57 +259,9 @@ async def send_start_menu(chat_id, reply_to=None):
             await bot.send_file(chat_id, START_STICKER_ID, reply_to=reply_to)
     except Exception as ex:
         log.warning("start sticker could not be sent; send a sticker directly to this bot to save it: %s", ex)
-    # Prefer the rotating KITTUBOT media as the actual welcome media, not as a
-    # separate link-preview message followed by the old static image.
-    random_video = random.choice(START_VIDEO_URLS) if START_VIDEO_URLS else ""
-    if random_video:
-        temp_path = None
-        try:
-            timeout = aiohttp.ClientTimeout(total=25, connect=8, sock_read=15)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(random_video, allow_redirects=True) as response:
-                    response.raise_for_status()
-                    content_type = (response.headers.get("Content-Type") or "").lower()
-                    length = int(response.headers.get("Content-Length") or 0)
-                    if length > 45 * 1024 * 1024:
-                        raise ValueError("KITTUBOT media is larger than 45 MB")
-                    body = await response.read()
-            # MP4 files normally contain the ftyp signature near the beginning.
-            if not ("video/" in content_type or "octet-stream" in content_type or b"ftyp" in body[:64]):
-                raise ValueError("KITTUBOT URL did not return a direct video file")
-            if len(body) > 45 * 1024 * 1024:
-                raise ValueError("KITTUBOT media is larger than 45 MB")
-            if len(body) < 1024:
-                raise ValueError("KITTUBOT media response was too small")
-            with tempfile.NamedTemporaryFile(prefix="zyra_start_", suffix=".mp4", delete=False) as handle:
-                handle.write(body)
-                temp_path = handle.name
-            await bot.send_file(
-                chat_id, temp_path, caption=welcome_text, buttons=start_buttons(),
-                parse_mode="html", reply_to=reply_to, supports_streaming=True,
-            )
-            return
-        except Exception as ex:
-            log.warning("Could not send KITTUBOT video as welcome media; trying preview fallback: %s", ex)
-        finally:
-            if temp_path and os.path.exists(temp_path):
-                try:
-                    os.unlink(temp_path)
-                except OSError:
-                    pass
-        # If the URL is a preview page rather than a direct media file, keep the
-        # KITTUBOT preview and the menu in one message; do not send the old image too.
-        try:
-            video_caption = f'<a href="{html.escape(random_video, quote=True)}">&#8203;</a>' + welcome_text
-            await bot.send_message(
-                chat_id, video_caption, buttons=start_buttons(), parse_mode="html",
-                link_preview=True, reply_to=reply_to,
-            )
-            return
-        except Exception as ex:
-            log.warning("KITTUBOT preview fallback failed: %s", ex)
-
-    media_path = WELCOME_ANIMATION if WELCOME_ANIMATION and os.path.isfile(WELCOME_ANIMATION) else WELCOME_IMAGE
+    # Pick a bundled video at random. This avoids downloading a video URL on
+    # every /start, which caused the welcome message to appear several seconds late.
+    media_path = choose_local_welcome_video() or WELCOME_IMAGE
     try:
         await bot.send_file(
             chat_id,
@@ -361,11 +270,13 @@ async def send_start_menu(chat_id, reply_to=None):
             buttons=start_buttons(),
             parse_mode="html",
             reply_to=reply_to,
+            supports_streaming=media_path.lower().endswith((".mp4", ".mov", ".m4v")),
         )
     except Exception as ex:
         log.warning("welcome media could not be sent; using text fallback: %s", ex)
-        await bot.send_message(chat_id, welcome_text, buttons=start_buttons(), parse_mode="html", reply_to=reply_to)
-
+        await bot.send_message(
+            chat_id, welcome_text, buttons=start_buttons(), parse_mode="html", reply_to=reply_to
+        )
 
 
 
@@ -783,7 +694,6 @@ async def finish_login(uid, e, client, phone):
 
 async def main():
     await start_web()
-    await refresh_start_video_urls()
     await bot.start(bot_token=BOT_TOKEN)
     await manager.boot_all()
     # Deployment summary plus one profile-status card per saved account.
