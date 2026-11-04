@@ -188,7 +188,7 @@ def setup(client):
             # Quote-style custom text; send each mention as a separate message.
             quote = html.escape(custom[:700])
             try:
-                await client.send_message(e.chat_id, "<blockquote>%s</blockquote>\\n%s" % (quote, mention), parse_mode="html")
+                await client.send_message(e.chat_id, "<blockquote>%s</blockquote>\n%s" % (quote, mention), parse_mode="html")
             except Exception:
                 continue
             await asyncio.sleep(2)
