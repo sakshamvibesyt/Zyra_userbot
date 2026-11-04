@@ -261,24 +261,39 @@ async def send_start_menu(chat_id, reply_to=None):
             await bot.send_file(chat_id, START_STICKER_ID, reply_to=reply_to)
     except Exception as ex:
         log.warning("start sticker could not be sent; send a sticker directly to this bot to save it: %s", ex)
-    # Pick one remote video URL at random; if the host rejects the URL,
-    # the exception handler below falls back to the welcome image/text.
-    media_path = random.choice(WELCOME_VIDEO_URLS) if WELCOME_VIDEO_URLS else WELCOME_IMAGE
-    try:
-        await bot.send_file(
-            chat_id,
-            media_path,
-            caption=welcome_text,
-            buttons=start_buttons(),
-            parse_mode="html",
-            reply_to=reply_to,
-            supports_streaming=media_path.lower().endswith((".mp4", ".mov", ".m4v")),
-        )
-    except Exception as ex:
-        log.warning("welcome media could not be sent; using text fallback: %s", ex)
-        await bot.send_message(
-            chat_id, welcome_text, buttons=start_buttons(), parse_mode="html", reply_to=reply_to
-        )
+    # Try the remote videos in shuffled order. A single dead/blocked URL should
+    # not cause the /start menu to lose its video; try the remaining URLs too.
+    video_urls = list(WELCOME_VIDEO_URLS)
+    random.shuffle(video_urls)
+    for media_path in video_urls:
+        try:
+            await bot.send_file(
+                chat_id,
+                media_path,
+                caption=welcome_text,
+                buttons=start_buttons(),
+                parse_mode="html",
+                reply_to=reply_to,
+                supports_streaming=True,
+            )
+            return
+        except Exception as ex:
+            log.warning("welcome video URL failed (%s): %s", media_path, ex)
+
+    # If every remote video fails, try the bundled welcome image before text.
+    if os.path.isfile(WELCOME_IMAGE):
+        try:
+            await bot.send_file(
+                chat_id, WELCOME_IMAGE, caption=welcome_text, buttons=start_buttons(),
+                parse_mode="html", reply_to=reply_to
+            )
+            return
+        except Exception as ex:
+            log.warning("welcome image could not be sent: %s", ex)
+
+    await bot.send_message(
+        chat_id, welcome_text, buttons=start_buttons(), parse_mode="html", reply_to=reply_to
+    )
 
 
 
@@ -316,7 +331,7 @@ async def cmd_start(e):
         await bot(functions.messages.SendReactionRequest(
             peer=e.peer_id,
             msg_id=e.id,
-            reaction=[types.ReactionEmoji(emoticon="❤️")],
+            reaction=[types.ReactionEmoji(emoticon="🦄")],
         ))
     except Exception as ex:
         log.warning("Start reaction failed; continuing to welcome menu: %s", ex)
