@@ -7,7 +7,7 @@ import random
 import re
 import time
 
-from telethon import events
+from telethon import events, types
 import db as database
 
 # In-memory AFK state; reset when the worker restarts.
@@ -51,6 +51,60 @@ def setup(client):
     filters = database.db.zyra_filters
     afk_settings = database.db.zyra_afk_settings
     afk_states = database.db.zyra_afk_states
+
+
+    # Group mention tools. Keep each invocation bounded to avoid flooding chats.
+    async def _collect_members(event, admins_only=False, limit=100):
+        if not event.is_group:
+            await event.edit("Ye command sirf group/supergroup mein use hoti hai.")
+            return None
+        members = []
+        try:
+            participant_filter = types.ChannelParticipantsAdmins if admins_only else None
+            async for participant in client.iter_participants(event.chat_id, filter=participant_filter):
+                if getattr(participant, "bot", False):
+                    continue
+                members.append(participant)
+                if len(members) >= limit:
+                    break
+        except Exception as ex:
+            await event.edit("Members fetch nahi ho paaya: <code>%s</code>" % html.escape(str(ex)[:180]))
+            return None
+        return members
+
+    async def _mention_post(event, members, text, title):
+        if not members:
+            return await event.edit("Koi eligible member nahi mila.")
+        # Telegram messages have a size limit; cap one command to 30 mentions.
+        members = members[:30]
+        mentions = []
+        for member in members:
+            name = html.escape((getattr(member, "first_name", None) or getattr(member, "title", None) or "Member").strip())
+            mentions.append('<a href="tg://user?id=%s">%s</a>' % (member.id, name))
+        intro = html.escape((text or "Everyone, please check this message!").strip())
+        body = "\n".join(mentions)
+        await event.edit("<b>%s</b>\n%s\n\n%s\n<i>Showing up to 30 members per command.</i>" % (title, intro, body))
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"tagall(?:\s+([\s\S]+))?$", outgoing=True))
+    async def tagall_cmd(e):
+        text = e.pattern_match.group(1) or "Everyone, please check this message!"
+        members = await _collect_members(e, admins_only=False, limit=100)
+        if members is not None:
+            await _mention_post(e, members, text, "🔔 TAG ALL")
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"(?:atag|atah)(?:\s+([\s\S]+))?$", outgoing=True))
+    async def tag_admins_cmd(e):
+        text = e.pattern_match.group(1) or "Admins, please check this message!"
+        members = await _collect_members(e, admins_only=True, limit=100)
+        if members is not None:
+            await _mention_post(e, members, text, "⚙️ TAG ADMINS")
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"onetag(?:\s+([\s\S]+))?$", outgoing=True))
+    async def onetag_cmd(e):
+        text = e.pattern_match.group(1) or "One-time member mention"
+        members = await _collect_members(e, admins_only=False, limit=30)
+        if members is not None:
+            await _mention_post(e, members, text, "🏷 ONE-TAG")
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"help$", outgoing=True))
     async def help_cmd(e):
@@ -97,6 +151,9 @@ def setup(client):
             f"<code>{prefix}stop word</code> · remove filter\n"
             f"<code>{prefix}filters</code> · list current-chat filters\n\n"
             "<b>⚒ GROUP ADMIN</b>\n"
+            f"<code>{prefix}tagall [text]</code> · mention up to 30 group members\n"
+            f"<code>{prefix}atag [text]</code> / <code>{prefix}atah [text]</code> · mention admins\n"
+            f"<code>{prefix}onetag [text]</code> · one-time compact mention\n"
             f"<code>{prefix}adminhelp</code> · admin guide\n"
             f"Reply to target: <code>{prefix}ban</code>, <code>{prefix}unban</code>, <code>{prefix}mute</code>, <code>{prefix}unmute</code>, <code>{prefix}kick</code>, <code>{prefix}del</code>\n"
             f"<code>{prefix}pin</code> · pin replied message\n"
