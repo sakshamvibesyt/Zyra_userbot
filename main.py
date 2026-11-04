@@ -42,8 +42,11 @@ def choose_local_welcome_video():
         videos = []
     if videos:
         return random.choice(videos)
+    # Use the legacy animation only if it actually exists in the repo/container.
     if WELCOME_ANIMATION and os.path.isfile(WELCOME_ANIMATION):
         return WELCOME_ANIMATION
+    if os.path.isfile(WELCOME_IMAGE):
+        return WELCOME_IMAGE
     return None
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -261,22 +264,30 @@ async def send_start_menu(chat_id, reply_to=None):
         log.warning("start sticker could not be sent; send a sticker directly to this bot to save it: %s", ex)
     # Pick a bundled video at random. This avoids downloading a video URL on
     # every /start, which caused the welcome message to appear several seconds late.
-    media_path = choose_local_welcome_video() or WELCOME_IMAGE
-    try:
-        await bot.send_file(
-            chat_id,
-            media_path,
-            caption=welcome_text,
-            buttons=start_buttons(),
-            parse_mode="html",
-            reply_to=reply_to,
-            supports_streaming=media_path.lower().endswith((".mp4", ".mov", ".m4v")),
-        )
-    except Exception as ex:
-        log.warning("welcome media could not be sent; using text fallback: %s", ex)
-        await bot.send_message(
-            chat_id, welcome_text, buttons=start_buttons(), parse_mode="html", reply_to=reply_to
-        )
+    media_path = choose_local_welcome_video()
+    if media_path:
+        try:
+            await bot.send_file(
+                chat_id,
+                media_path,
+                caption=welcome_text,
+                buttons=start_buttons(),
+                parse_mode="html",
+                reply_to=reply_to,
+                supports_streaming=media_path.lower().endswith((".mp4", ".mov", ".m4v")),
+            )
+            return
+        except Exception:
+            log.exception("Welcome media could not be sent; falling back to text")
+
+    # Never let a missing/broken media file prevent /start from responding.
+    await bot.send_message(
+        chat_id,
+        welcome_text,
+        buttons=start_buttons(),
+        parse_mode="html",
+        reply_to=reply_to,
+    )
 
 
 
@@ -723,21 +734,28 @@ async def main():
             )
     except Exception as ex:
         log.warning("Could not send deploy summary to logger group: %s", ex)
-    monitor_task = asyncio.create_task(manager.monitor_connections(), name="client-reconnect-monitor")
-    video_refresh_task = asyncio.create_task(
-        refresh_video_urls_periodically(), name="kittu-video-url-refresh"
+    monitor_task = asyncio.create_task(
+        manager.monitor_connections(), name="client-reconnect-monitor"
     )
-    log.info("ready")
+    # Welcome videos are bundled in assets/videos and selected locally at /start.
+    # No background URL-refresh task is needed (the old function was undefined
+    # and crashed the whole process during startup).
+    log.info(
+        "ready; bundled welcome videos found: %s",
+        len([
+            name for name in os.listdir(START_VIDEOS_DIR)
+            if name.lower().endswith((".mp4", ".mov", ".m4v"))
+            and os.path.isfile(os.path.join(START_VIDEOS_DIR, name))
+        ]) if os.path.isdir(START_VIDEOS_DIR) else 0,
+    )
     try:
         await bot.run_until_disconnected()
     finally:
         monitor_task.cancel()
-        video_refresh_task.cancel()
-        for task in (monitor_task, video_refresh_task):
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+        try:
+            await monitor_task
+        except asyncio.CancelledError:
+            pass
 
 
 if __name__ == "__main__":
