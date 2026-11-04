@@ -25,29 +25,23 @@ LOGGER_GROUP_ID = int(os.environ.get("LOGGER_GROUP_ID", "0") or 0)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ASSETS_DIR = os.path.join(BASE_DIR, "assets")
 WELCOME_IMAGE = os.path.join(ASSETS_DIR, "zyra_welcome.png")
-WELCOME_ANIMATION = os.environ.get("WELCOME_ANIMATION", os.path.join(ASSETS_DIR, "zyra_welcome.mp4")).strip()
-START_VIDEOS_DIR = os.path.join(ASSETS_DIR, "videos")
-
-
-def choose_local_welcome_video():
-    """Choose a bundled welcome video without downloading anything at /start."""
-    try:
-        videos = sorted(
-            os.path.join(START_VIDEOS_DIR, name)
-            for name in os.listdir(START_VIDEOS_DIR)
-            if name.lower().endswith((".mp4", ".mov", ".m4v"))
-            and os.path.isfile(os.path.join(START_VIDEOS_DIR, name))
-        )
-    except OSError:
-        videos = []
-    if videos:
-        return random.choice(videos)
-    # Use the legacy animation only if it actually exists in the repo/container.
-    if WELCOME_ANIMATION and os.path.isfile(WELCOME_ANIMATION):
-        return WELCOME_ANIMATION
-    if os.path.isfile(WELCOME_IMAGE):
-        return WELCOME_IMAGE
-    return None
+# Remote welcome videos hosted outside the repository (Image2URL / VideoToURL).
+# A random URL is selected for each /start, so bundled video files are not needed.
+WELCOME_VIDEO_URLS = [
+    "https://www.image2url.com/r2/default/videos/1793777378664-24e6cdaf-e93d-4c5a-be00-5ff2dde67135.mp4",
+    "https://www.image2url.com/r2/default/videos/1793777480370-c77acb6e-de0f-4262-82de-b9925d112011.mp4",
+    "https://www.image2url.com/r2/default/videos/1793777516710-db837e2b-9598-4663-b3e3-fe08df1046fe.mp4",
+    "https://www.image2url.com/r2/default/videos/1793777556596-27e35cd5-be79-4501-a389-69a97dfdc941.mp4",
+    "https://www.image2url.com/r2/default/videos/1793777590615-24ea387b-f155-4305-a415-13d8f9b56159.mp4",
+    "https://www.image2url.com/r2/default/videos/1793777645777-ccab11fd-aa85-474e-8d3c-6acfb4f01416.mp4",
+    "https://www.image2url.com/r2/default/videos/1793777685826-b16b7d62-d520-4dbe-b94e-809d91ae1a9c.mp4",
+    "https://www.image2url.com/r2/default/videos/1793777733775-9830bcb9-5c5c-4978-83ec-516ea4b72c73.mp4",
+    "https://www.image2url.com/r2/default/videos/1793777782306-a634fa5a-a4b8-4a3d-8019-0e017b7d37b9.mp4",
+    "https://www.image2url.com/r2/default/videos/1793777969027-c53672b2-65b1-4e6b-898c-8d2a6f846711.mp4",
+    "https://www.image2url.com/r2/default/videos/1793778035515-7758386e-0ea9-42d6-b110-f6c0665e196a.mp4",
+    "https://www.image2url.com/r2/default/videos/1793778142026-91548378-eee3-4382-8d3c-bf75cae322a7.mp4",
+    "https://videotourl.com/videos/1793779136616-4e46ae87-74eb-4dde-8055-7372974add4a.mp4",
+]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("main")
@@ -262,32 +256,24 @@ async def send_start_menu(chat_id, reply_to=None):
             await bot.send_file(chat_id, START_STICKER_ID, reply_to=reply_to)
     except Exception as ex:
         log.warning("start sticker could not be sent; send a sticker directly to this bot to save it: %s", ex)
-    # Pick a bundled video at random. This avoids downloading a video URL on
-    # every /start, which caused the welcome message to appear several seconds late.
-    media_path = choose_local_welcome_video()
-    if media_path:
-        try:
-            await bot.send_file(
-                chat_id,
-                media_path,
-                caption=welcome_text,
-                buttons=start_buttons(),
-                parse_mode="html",
-                reply_to=reply_to,
-                supports_streaming=media_path.lower().endswith((".mp4", ".mov", ".m4v")),
-            )
-            return
-        except Exception:
-            log.exception("Welcome media could not be sent; falling back to text")
-
-    # Never let a missing/broken media file prevent /start from responding.
-    await bot.send_message(
-        chat_id,
-        welcome_text,
-        buttons=start_buttons(),
-        parse_mode="html",
-        reply_to=reply_to,
-    )
+    # Pick one remote video URL at random; if the host rejects the URL,
+    # the exception handler below falls back to the welcome image/text.
+    media_path = random.choice(WELCOME_VIDEO_URLS) if WELCOME_VIDEO_URLS else WELCOME_IMAGE
+    try:
+        await bot.send_file(
+            chat_id,
+            media_path,
+            caption=welcome_text,
+            buttons=start_buttons(),
+            parse_mode="html",
+            reply_to=reply_to,
+            supports_streaming=media_path.lower().endswith((".mp4", ".mov", ".m4v")),
+        )
+    except Exception as ex:
+        log.warning("welcome media could not be sent; using text fallback: %s", ex)
+        await bot.send_message(
+            chat_id, welcome_text, buttons=start_buttons(), parse_mode="html", reply_to=reply_to
+        )
 
 
 
@@ -734,20 +720,8 @@ async def main():
             )
     except Exception as ex:
         log.warning("Could not send deploy summary to logger group: %s", ex)
-    monitor_task = asyncio.create_task(
-        manager.monitor_connections(), name="client-reconnect-monitor"
-    )
-    # Welcome videos are bundled in assets/videos and selected locally at /start.
-    # No background URL-refresh task is needed (the old function was undefined
-    # and crashed the whole process during startup).
-    log.info(
-        "ready; bundled welcome videos found: %s",
-        len([
-            name for name in os.listdir(START_VIDEOS_DIR)
-            if name.lower().endswith((".mp4", ".mov", ".m4v"))
-            and os.path.isfile(os.path.join(START_VIDEOS_DIR, name))
-        ]) if os.path.isdir(START_VIDEOS_DIR) else 0,
-    )
+    monitor_task = asyncio.create_task(manager.monitor_connections(), name="client-reconnect-monitor")
+    log.info("ready; configured %s remote welcome video URLs", len(WELCOME_VIDEO_URLS))
     try:
         await bot.run_until_disconnected()
     finally:
