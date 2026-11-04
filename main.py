@@ -103,7 +103,7 @@ def build_welcome_text(user_name="there"):
     return (
         f"<b>✦ 𝐙𝐘𝐑𝐀 𝐔𝐒𝐄𝐑𝐁𝐎𝐓 ✦</b>\n"
         f"💜 <b>Welcome, {safe_name}!</b>\n"
-        "👑 Owner: <a href=\"https://t.me/coderxsem\">Saksham</a> · <code>@coderxsem</code>\n"
+        "👑 Owner: Saksham · <code>@coderxsem</code>\n"
         "<i>Your personal Telegram workspace is ready.</i>\n\n"
         "<blockquote expandable>"
         "╭─── ⟡ <b>QUICK START</b> ⟡ ───╮\n"
