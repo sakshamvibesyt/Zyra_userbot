@@ -16,10 +16,11 @@ API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 PORT = int(os.environ.get("PORT", 8080))
-MAX_USERS = int(os.environ.get("MAX_USERS", 12))
+MAX_USERS = int(os.environ.get("MAX_USERS", 0) or 0)  # 0 = unlimited self-service account connections
 OWNER_URL = os.environ.get("OWNER_URL", "https://t.me/Sakshamvenus")
 SUPPORT_URL = os.environ.get("SUPPORT_URL", "https://t.me/Sakshamabout_bot")
-ADD_TO_GROUP_URL = os.environ.get("ADD_TO_GROUP_URL", "https://t.me/?startgroup=true")
+ADD_TO_GROUP_URL = os.environ.get("ADD_TO_GROUP_URL", "").strip()
+BOT_USERNAME = os.environ.get("BOT_USERNAME", "").strip().lstrip("@")
 START_STICKER_ID = os.environ.get("START_STICKER_ID", "").strip()
 OWNER_ID = int(os.environ.get("OWNER_ID", "0") or 0)
 LOGGER_GROUP_ID = int(os.environ.get("LOGGER_GROUP_ID", "0") or 0)
@@ -256,8 +257,9 @@ HELP = HELP_TEXT
 
 
 def start_buttons():
+    add_group_url = ADD_TO_GROUP_URL or (f"https://t.me/{BOT_USERNAME}?startgroup=true" if BOT_USERNAME else "https://t.me/?startgroup=true")
     return [
-        [Button.url("➕  ADD TO GROUP", ADD_TO_GROUP_URL)],
+        [Button.url("➕  ADD TO GROUP", add_group_url)],
         [Button.inline("✦  ADD ACCOUNT", b"login")],
         [Button.inline("⌘  HELP CENTER", b"help"), Button.url("♡  SUPPORT", SUPPORT_URL)],
         [Button.url("♛  OWNER", OWNER_URL)],
@@ -297,9 +299,11 @@ async def send_start_menu(chat_id, reply_to=None):
             source = await bot.get_messages(saved["chat_id"], ids=saved["message_id"])
             if source and source.media:
                 await bot.send_file(chat_id, source, reply_to=reply_to)
+                await asyncio.sleep(0.5)
         elif START_STICKER_ID:
             # Kept as a fallback for compatible Telethon media references.
             await bot.send_file(chat_id, START_STICKER_ID, reply_to=reply_to)
+            await asyncio.sleep(0.5)
     except Exception as ex:
         log.warning("start sticker could not be sent; send a sticker directly to this bot to save it: %s", ex)
     # Prefer the rotating KITTUBOT media as the actual welcome media, not as a
@@ -369,7 +373,7 @@ async def send_start_menu(chat_id, reply_to=None):
 
 
 
-@bot.on(events.NewMessage(pattern=r"^/start(?:@\w+)?(?:\s+.*)?$"))
+@bot.on(events.NewMessage(pattern=r"^/(?:start|startsg)(?:@\w+)?(?:\s+.*)?$"))
 async def cmd_start(e):
     """Show the welcome menu when someone sends /start."""
     log.info("/start received user_id=%s", e.sender_id)
@@ -403,7 +407,7 @@ async def cmd_start(e):
         await bot(functions.messages.SendReactionRequest(
             peer=e.peer_id,
             msg_id=e.id,
-            reaction=[types.ReactionEmoji(emoticon="❤️")],
+            reaction=[types.ReactionEmoji(emoticon="🦄")],
         ))
     except Exception as ex:
         log.warning("Start reaction failed; continuing to welcome menu: %s", ex)
@@ -493,10 +497,11 @@ async def start_login(uid, event):
         return
 
     try:
-        count = await db.users.count_documents({})
-        if count >= MAX_USERS:
-            await event.respond("Abhi account limit full hai. Baad mein try karein.")
-            return
+        if MAX_USERS > 0:
+            count = await db.users.count_documents({})
+            if count >= MAX_USERS:
+                await event.respond("Abhi account limit full hai. Baad mein try karein.")
+                return
     except Exception:
         log.exception("Could not check account limit")
 
@@ -515,8 +520,6 @@ async def start_login(uid, event):
 
 @bot.on(events.NewMessage(pattern=r"^/cancel$"))
 async def cmd_cancel_login(e):
-    if not await require_panel_access(e):
-        return
     uid = e.sender_id
     st = states.pop(uid, None)
     if st and st.get("client"):
@@ -529,8 +532,6 @@ async def cmd_cancel_login(e):
 
 @bot.on(events.CallbackQuery(data=b"login"))
 async def cb_login(e):
-    if not await is_panel_admin(e.sender_id):
-        return await e.answer("Owner/admin access required", alert=True)
     await e.answer()
     await start_login(e.sender_id, e)
 
@@ -539,8 +540,6 @@ async def cb_login(e):
 
 @bot.on(events.NewMessage(pattern=r"^/login$"))
 async def cmd_login(e):
-    if not await require_panel_access(e):
-        return
     await start_login(e.sender_id, e)
 
 
@@ -682,8 +681,8 @@ async def cmd_list_admins(e):
 @bot.on(events.NewMessage())
 async def router(e):
     uid = e.sender_id
-    if not await is_panel_admin(uid):
-        return
+    # OTP / 2FA replies belong to the user who started this login flow.
+    # Each user can complete only their own pending state.
     st = states.get(uid)
     if not st or not e.raw_text or e.raw_text.startswith("/"):
         return
@@ -785,6 +784,13 @@ async def main():
     await start_web()
     await refresh_start_video_urls()
     await bot.start(bot_token=BOT_TOKEN)
+    global BOT_USERNAME
+    try:
+        bot_identity = await bot.get_me()
+        if getattr(bot_identity, "username", None):
+            BOT_USERNAME = bot_identity.username
+    except Exception as ex:
+        log.warning("Could not resolve bot username for Add to Group button: %s", ex)
     await manager.boot_all()
     # Deployment summary plus one profile-status card per saved account.
     try:
