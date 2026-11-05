@@ -256,57 +256,47 @@ def pick_welcome_video():
 
 
 async def run_start_animation(chat_id):
-    """Show a quote-style ZYRA engine boot sequence by editing one message; no artificial sleeps."""
-    stages = [
-        (
-            "<blockquote>"
-            "╭━━━『 𝗭𝗬𝗥𝗔 𝗘𝗡𝗚𝗜𝗡𝗘 』━━━╮\n"
-            "\n"
-            "⟡ <code>Initializing core......</code>\n"
-            "╰━━━━━━━━━━━━━━━━━━━━╯"
-            "</blockquote>"
-        ),
-        (
-            "<blockquote>"
-            "╭━━━『 𝗭𝗬𝗥𝗔 𝗘𝗡𝗚𝗜𝗡𝗘 』━━━╮\n"
-            "\n"
-            "⌁ <code>Connecting to main server...</code>\n"
-            "⌁ <code>Loading userbot modules...</code>\n"
-            "⌁ <code>Securing user session...</code>\n"
-            "╰━━━━━━━━━━━━━━━━━━━━╯"
-            "</blockquote>"
-        ),
-        (
-            "<blockquote>"
-            "╭━━━『 𝗦𝗬𝗦𝗧𝗘𝗠 𝗖𝗛𝗘𝗖𝗞 』━━━╮\n"
-            "\n"
-            "<code>[ ✓ ] Core modules loaded</code>\n"
-            "<code>[ ✓ ] Secure session ready</code>\n"
-            "<code>[ ✓ ] Services connected</code>\n"
-            "╰━━━━━━━━━━━━━━━━━━━━╯"
-            "</blockquote>"
-        ),
-        (
-            "<blockquote>"
-            "╭━━━『 𝗭𝗬𝗥𝗔 𝗘𝗡𝗚𝗜𝗡𝗘 』━━━╮\n"
-            "\n"
-            "<code>▰▰▰▰▰▰▰▰▰▰ 100%</code>\n"
-            "\n"
-            "⚡ <b>ENGINE INITIALIZED</b>\n"
-            "✓ <b>ALL SYSTEMS ONLINE</b>\n"
-            "╰━━━━━━━━━━━━━━━━━━━━╯\n"
-            "\n"
-            "<b>✦ GET STARTED ✦</b>"
-            "</blockquote>"
-        ),
+    """Play a paced, multi-frame ZYRA engine boot animation in one message."""
+    header = "╭━━━『 ZYRA ENGINE 』━━━╮"
+    footer = "╰━━━━━━━━━━━━━━━━━━━━╯"
+    base = (
+        f"{header}\n\n"
+        "  Initializing ZYRA Core...\n"
+        "  Connecting to Main Server...\n"
+        "  Loading Userbot Modules...\n"
+        "  Encrypting Session...\n"
+        "  Checking System Status..."
+    )
+    frames = [
+        f"{header}\n\n  Initializing ZYRA Core...\n{footer}",
+        f"{header}\n\n  Initializing ZYRA Core...\n  Connecting to Main Server...\n{footer}",
+        f"{header}\n\n  Initializing ZYRA Core...\n  Connecting to Main Server...\n  Loading Userbot Modules...\n{footer}",
+        f"{header}\n\n  Initializing ZYRA Core...\n  Connecting to Main Server...\n  Loading Userbot Modules...\n  Encrypting Session...\n{footer}",
+        f"{base}\n{footer}",
+        f"{base}\n\n  [████░░░░░░░░░░░░] 25%\n{footer}",
+        f"{base}\n\n  [████████░░░░░░░░] 50%\n{footer}",
+        f"{base}\n\n  [████████████░░░░] 75%\n{footer}",
+        f"{base}\n\n  [████████████████] 100%\n\n  ✓ ENGINE INITIALIZED\n{footer}",
+        f"{base}\n\n  [████████████████] 100%\n\n  ✓ ENGINE INITIALIZED\n  ✓ ALL SYSTEMS ONLINE\n\n{footer}",
     ]
-    status = await bot.send_message(chat_id, stages[0], parse_mode="html", link_preview=False)
-    for stage in stages[1:]:
+
+    # The first frame follows the /start reaction. Every later frame edits
+    # this same message so the full boot sequence is visible, not skipped.
+    status = await bot.send_message(chat_id, frames[0], parse_mode=None, link_preview=False)
+    for frame in frames[1:]:
+        await asyncio.sleep(0.9)
         try:
-            await status.edit(stage, parse_mode="html", link_preview=False)
+            await status.edit(frame, parse_mode=None, link_preview=False)
         except Exception as ex:
             log.warning("Start animation edit failed: %s", ex)
             break
+
+    # Keep the completed screen briefly, then delete it before sticker/video.
+    await asyncio.sleep(1.1)
+    try:
+        await status.delete()
+    except Exception as ex:
+        log.warning("Could not delete completed start animation: %s", ex)
     return status
 
 
@@ -319,7 +309,7 @@ async def send_start_menu(chat_id, reply_to=None, user_name=None):
             user_name = "there"
     welcome_text = build_welcome_text(user_name)
 
-    # First show the quote-style engine animation in one message.
+    # Show the paced engine animation; it deletes itself before sticker/video.
     await run_start_animation(chat_id)
 
     # Then send the already-saved sticker, followed immediately by the welcome video.
