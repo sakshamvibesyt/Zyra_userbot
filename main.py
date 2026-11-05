@@ -16,12 +16,14 @@ API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 PORT = int(os.environ.get("PORT", 8080))
-MAX_USERS = int(os.environ.get("MAX_USERS", 0) or 0)  # 0 = unlimited self-service account connections
-OWNER_URL = os.environ.get("OWNER_URL", "https://t.me/Sakshamvenus")
-SUPPORT_URL = os.environ.get("SUPPORT_URL", "https://t.me/Sakshamabout_bot")
-ADD_TO_GROUP_URL = os.environ.get("ADD_TO_GROUP_URL", "").strip()
-BOT_USERNAME = os.environ.get("BOT_USERNAME", "").strip().lstrip("@")
+MAX_USERS = int(os.environ.get("MAX_USERS", 12))
+OWNER_URL = os.environ.get("OWNER_URL", "https://t.me/coderxsem")
+SUPPORT_URL = os.environ.get("SUPPORT_URL", "https://t.me/+5suOiNvkW-43YTc9")
+ADD_TO_GROUP_URL = os.environ.get("ADD_TO_GROUP_URL", "https://t.me/?startgroup=true")
 START_STICKER_ID = os.environ.get("START_STICKER_ID", "").strip()
+START_STICKER_MESSAGE = None
+START_VIDEO_CACHE_PATH = os.path.join(tempfile.gettempdir(), "zyra_start_video_cache.mp4")
+START_VIDEO_CACHE_URL = ""
 OWNER_ID = int(os.environ.get("OWNER_ID", "0") or 0)
 LOGGER_GROUP_ID = int(os.environ.get("LOGGER_GROUP_ID", "0") or 0)
 WELCOME_IMAGE = os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.png")
@@ -29,20 +31,23 @@ WELCOME_ANIMATION = os.environ.get("WELCOME_ANIMATION", os.path.join(os.path.dir
 
 # Rotating start video URLs adapted from the reference KittuBot repository.
 START_VIDEO_URLS = [
-    "https://yukiapi.site/file/6CXCn2De",
-    "https://yukiapi.site/file/YWwD9Qr8",
-    "https://yukiapi.site/file/rsCNQf0j",
-    "https://yukiapi.site/file/dWFtIZny",
-    "https://yukiapi.site/file/eYtZuZwz",
-    "https://yukiapi.site/file/euiiZogt",
-    "https://yukiapi.site/file/UcidJrAQ",
-    "https://yukiapi.site/file/AtKzDFZU",
-    "https://yukiapi.site/file/nGA7YMtQ",
-    "https://yukiapi.site/file/aQSUKqZk",
-    "https://yukiapi.site/file/ns7QmFhQ",
-    "https://yukiapi.site/file/tZCMxz2a",
+    'https://www.image2url.com/r2/default/videos/1793777378664-24e6cdaf-e93d-4c5a-be00-5ff2dde67135.mp4',
+    'https://www.image2url.com/r2/default/videos/1793777480370-c77acb6e-de0f-4262-82de-b9925d112011.mp4',
+    'https://www.image2url.com/r2/default/videos/1793777516710-db837e2b-9598-4663-b3e3-fe08df1046fe.mp4',
+    'https://www.image2url.com/r2/default/videos/1793777556596-27e35cd5-be79-4501-a389-69a97dfdc941.mp4',
+    'https://www.image2url.com/r2/default/videos/1793777590615-24ea387b-f155-4305-a415-13d8f9b56159.mp4',
+    'https://www.image2url.com/r2/default/videos/1793777645777-ccab11fd-aa85-474e-8d3c-6acfb4f01416.mp4',
+    'https://www.image2url.com/r2/default/videos/1793777685826-b16b7d62-d520-4dbe-b94e-809d91ae1a9c.mp4',
+    'https://www.image2url.com/r2/default/videos/1793777733775-9830bcb9-5c5c-4978-83ec-516ea4b72c73.mp4',
+    'https://www.image2url.com/r2/default/videos/1793777782306-a634fa5a-a4b8-4a3d-8019-0e017b7d37b9.mp4',
+    'https://www.image2url.com/r2/default/videos/1793777969027-c53672b2-65b1-4e6b-898c-8d2a6f846711.mp4',
+    'https://www.image2url.com/r2/default/videos/1793778142026-91548378-eee3-4382-8d3c-bf75cae322a7.mp4',
+    'https://videotourl.com/videos/1793779136616-4e46ae87-74eb-4dde-8055-7372974add4a.mp4',
+    'https://www.image2url.com/r2/default/videos/1793781261302-44decde5-6d9f-45eb-b3d5-ef66a0213014.mp4',
+    'https://www.image2url.com/r2/default/videos/1793781045682-f99fe8eb-e9d8-428d-a440-ff0811aa6fcd.mp4',
+    'https://www.image2url.com/r2/default/videos/1793781361709-49f91c16-1baf-4bcb-b7eb-b7b039632ac3.mp4',
+    'https://www.image2url.com/r2/default/videos/1793781440382-7b8108b1-a774-45f2-a373-fe3909da2d8f.mp4',
 ]
-
 # Auto-sync the START_IMG_URL list from KITTUBOT's GitHub config.
 # The built-in URLs above remain a fallback if GitHub is unavailable.
 KITTU_CONFIG_URL = os.environ.get(
@@ -88,6 +93,47 @@ async def refresh_video_urls_periodically():
     while True:
         await asyncio.sleep(VIDEO_URL_REFRESH_SECONDS)
         await refresh_start_video_urls()
+
+
+async def cache_start_video():
+    """Download one URL in the background so /start never waits for a remote download."""
+    global START_VIDEO_CACHE_URL
+    urls = list(START_VIDEO_URLS)
+    random.shuffle(urls)
+    for url in urls:
+        temp_path = START_VIDEO_CACHE_PATH + ".part"
+        try:
+            timeout = aiohttp.ClientTimeout(total=45, connect=8, sock_read=25)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, allow_redirects=True) as response:
+                    response.raise_for_status()
+                    content_type = (response.headers.get("Content-Type") or "").lower()
+                    if "video/" not in content_type and "octet-stream" not in content_type:
+                        # Some hosts omit the MIME type; verify the MP4 signature below.
+                        pass
+                    total = 0
+                    with open(temp_path, "wb") as output:
+                        async for chunk in response.content.iter_chunked(256 * 1024):
+                            total += len(chunk)
+                            if total > 45 * 1024 * 1024:
+                                raise ValueError("Video exceeds 45 MB")
+                            output.write(chunk)
+            with open(temp_path, "rb") as check:
+                signature = check.read(64)
+            if total < 1024 or ("video/" not in content_type and "octet-stream" not in content_type and b"ftyp" not in signature):
+                raise ValueError("URL did not return a direct MP4/video file")
+            os.replace(temp_path, START_VIDEO_CACHE_PATH)
+            START_VIDEO_CACHE_URL = url
+            log.info("Cached welcome video from %s (%s bytes)", url, total)
+            return
+        except Exception as ex:
+            log.warning("Could not cache start video URL %s: %s", url, ex)
+            try:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+            except OSError:
+                pass
+    log.warning("No start video URL could be cached; /start will use URL preview fallback")
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -257,9 +303,8 @@ HELP = HELP_TEXT
 
 
 def start_buttons():
-    add_group_url = ADD_TO_GROUP_URL or (f"https://t.me/{BOT_USERNAME}?startgroup=true" if BOT_USERNAME else "https://t.me/?startgroup=true")
     return [
-        [Button.url("➕  ADD TO GROUP", add_group_url)],
+        [Button.url("➕  ADD TO GROUP", ADD_TO_GROUP_URL)],
         [Button.inline("✦  ADD ACCOUNT", b"login")],
         [Button.inline("⌘  HELP CENTER", b"help"), Button.url("♡  SUPPORT", SUPPORT_URL)],
         [Button.url("♛  OWNER", OWNER_URL)],
@@ -282,127 +327,86 @@ def section_buttons():
     ]
 
 
-async def send_start_menu(chat_id, reply_to=None):
-    # Personalize the visible welcome line with the Telegram user's first name.
-    try:
-        user = await bot.get_entity(chat_id)
-        user_name = getattr(user, "first_name", None) or getattr(user, "title", None) or "there"
-    except Exception:
-        user_name = "there"
-    welcome_text = build_welcome_text(user_name)
-
-    # Prefer a sticker message saved through this bot; this works with Telethon
-    # and survives redeploys when MongoDB is configured.
+async def load_start_sticker_cache():
+    """Load the saved sticker message once at startup instead of querying Mongo on every /start."""
+    global START_STICKER_MESSAGE
     try:
         saved = await db.settings.find_one({"_id": "start_sticker"})
         if saved:
             source = await bot.get_messages(saved["chat_id"], ids=saved["message_id"])
             if source and source.media:
-                await bot.send_file(chat_id, source, reply_to=reply_to)
-                await asyncio.sleep(0.5)
-        elif START_STICKER_ID:
-            # Kept as a fallback for compatible Telethon media references.
-            await bot.send_file(chat_id, START_STICKER_ID, reply_to=reply_to)
-            await asyncio.sleep(0.5)
+                START_STICKER_MESSAGE = source
     except Exception as ex:
-        log.warning("start sticker could not be sent; send a sticker directly to this bot to save it: %s", ex)
-    # Prefer the rotating KITTUBOT media as the actual welcome media, not as a
-    # separate link-preview message followed by the old static image.
-    random_video = random.choice(START_VIDEO_URLS) if START_VIDEO_URLS else ""
-    if random_video:
-        temp_path = None
+        log.warning("Could not preload start sticker: %s", ex)
+
+
+async def send_start_menu(chat_id, reply_to=None, user_name=None):
+    # /start passes the sender name so it does not need a separate get_entity request.
+    if not user_name:
         try:
-            timeout = aiohttp.ClientTimeout(total=25, connect=8, sock_read=15)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(random_video, allow_redirects=True) as response:
-                    response.raise_for_status()
-                    content_type = (response.headers.get("Content-Type") or "").lower()
-                    length = int(response.headers.get("Content-Length") or 0)
-                    if length > 45 * 1024 * 1024:
-                        raise ValueError("KITTUBOT media is larger than 45 MB")
-                    body = await response.read()
-            # MP4 files normally contain the ftyp signature near the beginning.
-            if not ("video/" in content_type or "octet-stream" in content_type or b"ftyp" in body[:64]):
-                raise ValueError("KITTUBOT URL did not return a direct video file")
-            if len(body) > 45 * 1024 * 1024:
-                raise ValueError("KITTUBOT media is larger than 45 MB")
-            if len(body) < 1024:
-                raise ValueError("KITTUBOT media response was too small")
-            with tempfile.NamedTemporaryFile(prefix="zyra_start_", suffix=".mp4", delete=False) as handle:
-                handle.write(body)
-                temp_path = handle.name
+            user = await bot.get_entity(chat_id)
+            user_name = getattr(user, "first_name", None) or getattr(user, "title", None) or "there"
+        except Exception:
+            user_name = "there"
+    welcome_text = build_welcome_text(user_name)
+
+    sticker_sent = False
+    try:
+        if START_STICKER_MESSAGE is not None:
+            await bot.send_file(chat_id, START_STICKER_MESSAGE, reply_to=reply_to)
+            sticker_sent = True
+        elif START_STICKER_ID:
+            await bot.send_file(chat_id, START_STICKER_ID, reply_to=reply_to)
+            sticker_sent = True
+    except Exception as ex:
+        log.warning("Start sticker could not be sent: %s", ex)
+
+    if sticker_sent:
+        await asyncio.sleep(0.5)
+
+    # Use a pre-cached URL video. Never download a multi-megabyte video while a
+    # user is waiting for /start; the cache is warmed in the background at startup.
+    if os.path.isfile(START_VIDEO_CACHE_PATH) and os.path.getsize(START_VIDEO_CACHE_PATH) > 1024:
+        try:
             await bot.send_file(
-                chat_id, temp_path, caption=welcome_text, buttons=start_buttons(),
-                parse_mode="html", reply_to=reply_to, supports_streaming=True,
+                chat_id, START_VIDEO_CACHE_PATH, caption=welcome_text,
+                buttons=start_buttons(), parse_mode="html", reply_to=reply_to,
+                supports_streaming=True,
             )
             return
         except Exception as ex:
-            log.warning("Could not send KITTUBOT video as welcome media; trying preview fallback: %s", ex)
-        finally:
-            if temp_path and os.path.exists(temp_path):
-                try:
-                    os.unlink(temp_path)
-                except OSError:
-                    pass
-        # If the URL is a preview page rather than a direct media file, keep the
-        # KITTUBOT preview and the menu in one message; do not send the old image too.
-        try:
-            video_caption = f'<a href="{html.escape(random_video, quote=True)}">&#8203;</a>' + welcome_text
-            await bot.send_message(
-                chat_id, video_caption, buttons=start_buttons(), parse_mode="html",
-                link_preview=True, reply_to=reply_to,
-            )
-            return
-        except Exception as ex:
-            log.warning("KITTUBOT preview fallback failed: %s", ex)
+            log.warning("Cached welcome video send failed; using URL preview: %s", ex)
+
+    # Immediate fallback: Telegram fetches the URL preview; the bot does not wait
+    # for the entire video to download on the Render instance.
+    video_url = random.choice(START_VIDEO_URLS) if START_VIDEO_URLS else ""
+    if video_url:
+        video_caption = (
+            welcome_text + "\n\n🎬 <a href=\"" + html.escape(video_url, quote=True)
+            + "\">Welcome video</a>"
+        )
+        await bot.send_message(
+            chat_id, video_caption, buttons=start_buttons(), parse_mode="html",
+            link_preview=True, reply_to=reply_to,
+        )
+        return
 
     media_path = WELCOME_ANIMATION if WELCOME_ANIMATION and os.path.isfile(WELCOME_ANIMATION) else WELCOME_IMAGE
     try:
-        await bot.send_file(
-            chat_id,
-            media_path,
-            caption=welcome_text,
-            buttons=start_buttons(),
-            parse_mode="html",
-            reply_to=reply_to,
-        )
+        await bot.send_file(chat_id, media_path, caption=welcome_text, buttons=start_buttons(),
+                            parse_mode="html", reply_to=reply_to)
     except Exception as ex:
-        log.warning("welcome media could not be sent; using text fallback: %s", ex)
+        log.warning("Welcome media could not be sent; using text fallback: %s", ex)
         await bot.send_message(chat_id, welcome_text, buttons=start_buttons(), parse_mode="html", reply_to=reply_to)
 
 
 
-
-@bot.on(events.NewMessage(pattern=r"^/(?:start|startsg)(?:@\w+)?(?:\s+.*)?$"))
+@bot.on(events.NewMessage(pattern=r"^/start(?:@\w+)?(?:\s+.*)?$"))
 async def cmd_start(e):
-    """Show the welcome menu when someone sends /start."""
+    """React immediately, then send the welcome sequence; analytics run in background."""
     log.info("/start received user_id=%s", e.sender_id)
-    # Log only the first /start from each Telegram user, avoiding repeated spam.
-    try:
-        sender = await e.get_sender()
-        first_name = (getattr(sender, "first_name", None) or "Telegram user").strip()
-        username = getattr(sender, "username", None)
-        start_record = await bot_start_users.find_one({"_id": int(e.sender_id)})
-        if not start_record:
-            await bot_start_users.update_one(
-                {"_id": int(e.sender_id)},
-                {"$set": {"name": first_name, "username": username}},
-                upsert=True,
-            )
-            username_line = f"\n♧ Username: @{html.escape(username)}" if username else "\n♧ Username: <i>not set</i>"
-            total_started = await bot_start_users.count_documents({})
-            await send_logger_log(
-                "🪄 <b>NEW BOT USER</b>\n"
-                "━━━━━━━━━━━━━━━━━━\n"
-                f"👤 Name: <b>{html.escape(first_name)}</b>\n"
-                f"🆔 ID: <code>{e.sender_id}</code>"
-                f"{username_line}\n"
-                f"📊 First-time users: <b>{total_started}</b>\n"
-                "✨ <i>Zyra just got a new visitor!</i>"
-            )
-    except Exception as ex:
-        log.warning("Could not record /start event: %s", ex)
-    # A reaction is optional; failure must never prevent the welcome menu.
+
+    # The reaction is the first awaited network action, so analytics cannot delay it.
     try:
         await bot(functions.messages.SendReactionRequest(
             peer=e.peer_id,
@@ -410,8 +414,38 @@ async def cmd_start(e):
             reaction=[types.ReactionEmoji(emoticon="🦄")],
         ))
     except Exception as ex:
-        log.warning("Start reaction failed; continuing to welcome menu: %s", ex)
-    await send_start_menu(e.chat_id)
+        log.warning("Unicorn start reaction failed; continuing: %s", ex)
+
+    sender = e.sender
+    first_name = (getattr(sender, "first_name", None) or "there").strip()
+    asyncio.create_task(record_start_user(e.sender_id, first_name, getattr(sender, "username", None)))
+    await send_start_menu(e.chat_id, user_name=first_name)
+
+
+async def record_start_user(user_id, first_name, username):
+    """Record first-time bot users without blocking the visible /start response."""
+    try:
+        start_record = await bot_start_users.find_one({"_id": int(user_id)})
+        if start_record:
+            return
+        await bot_start_users.update_one(
+            {"_id": int(user_id)},
+            {"$set": {"name": first_name, "username": username}},
+            upsert=True,
+        )
+        username_line = f"\n♧ Username: @{html.escape(username)}" if username else "\n♧ Username: <i>not set</i>"
+        total_started = await bot_start_users.count_documents({})
+        await send_logger_log(
+            "🪄 <b>NEW BOT USER</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            f"👤 Name: <b>{html.escape(first_name)}</b>\n"
+            f"🆔 ID: <code>{user_id}</code>"
+            f"{username_line}\n"
+            f"📊 First-time users: <b>{total_started}</b>\n"
+            "✨ <i>Zyra just got a new visitor!</i>"
+        )
+    except Exception as ex:
+        log.warning("Could not record /start event: %s", ex)
 
 def is_welcome_media_message(event):
     """Match media sent privately by the configured owner for welcome-sticker saving."""
@@ -426,11 +460,13 @@ def is_welcome_media_message(event):
 
 @bot.on(events.NewMessage(func=is_welcome_media_message))
 async def sticker_id_helper(e):
+    global START_STICKER_MESSAGE
     if not await require_panel_access(e):
         return
     # Save the source message reference in MongoDB; Telethon uses MTProto media,
     # not Bot API file_id strings from third-party ID bots.
     try:
+        START_STICKER_MESSAGE = e
         await db.settings.update_one(
             {"_id": "start_sticker"},
             {"$set": {"chat_id": e.chat_id, "message_id": e.id}},
@@ -497,11 +533,10 @@ async def start_login(uid, event):
         return
 
     try:
-        if MAX_USERS > 0:
-            count = await db.users.count_documents({})
-            if count >= MAX_USERS:
-                await event.respond("Abhi account limit full hai. Baad mein try karein.")
-                return
+        count = await db.users.count_documents({})
+        if count >= MAX_USERS:
+            await event.respond("Abhi account limit full hai. Baad mein try karein.")
+            return
     except Exception:
         log.exception("Could not check account limit")
 
@@ -681,8 +716,8 @@ async def cmd_list_admins(e):
 @bot.on(events.NewMessage())
 async def router(e):
     uid = e.sender_id
-    # OTP / 2FA replies belong to the user who started this login flow.
-    # Each user can complete only their own pending state.
+    # Each user may complete only their own pending login state. Admin status is
+    # not required for OTP/2FA; management commands remain separately protected.
     st = states.get(uid)
     if not st or not e.raw_text or e.raw_text.startswith("/"):
         return
@@ -782,15 +817,15 @@ async def finish_login(uid, e, client, phone):
 
 async def main():
     await start_web()
-    await refresh_start_video_urls()
     await bot.start(bot_token=BOT_TOKEN)
-    global BOT_USERNAME
+    global ADD_TO_GROUP_URL
     try:
-        bot_identity = await bot.get_me()
-        if getattr(bot_identity, "username", None):
-            BOT_USERNAME = bot_identity.username
+        bot_profile = await bot.get_me()
+        if bot_profile and bot_profile.username and not os.environ.get("ADD_TO_GROUP_URL"):
+            ADD_TO_GROUP_URL = f"https://t.me/{bot_profile.username}?startgroup=true"
     except Exception as ex:
-        log.warning("Could not resolve bot username for Add to Group button: %s", ex)
+        log.warning("Could not resolve bot username for Add to Group URL: %s", ex)
+    await load_start_sticker_cache()
     await manager.boot_all()
     # Deployment summary plus one profile-status card per saved account.
     try:
@@ -820,16 +855,15 @@ async def main():
     except Exception as ex:
         log.warning("Could not send deploy summary to logger group: %s", ex)
     monitor_task = asyncio.create_task(manager.monitor_connections(), name="client-reconnect-monitor")
-    video_refresh_task = asyncio.create_task(
-        refresh_video_urls_periodically(), name="kittu-video-url-refresh"
-    )
+    # Warm the user's configured welcome-video URL list in the background.
+    # Do not sync KITTUBOT URLs here: that would overwrite the user's URLs.
+    video_cache_task = asyncio.create_task(cache_start_video(), name="zyra-start-video-cache")
     log.info("ready")
     try:
         await bot.run_until_disconnected()
     finally:
         monitor_task.cancel()
-        video_refresh_task.cancel()
-        for task in (monitor_task, video_refresh_task):
+        for task in (monitor_task, video_cache_task):
             try:
                 await task
             except asyncio.CancelledError:
