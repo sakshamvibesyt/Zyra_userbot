@@ -1,4 +1,4 @@
-import asyncio, logging, os, time, random, re, html
+import asyncio, logging, os, time, random, re, ast, html, tempfile
 import aiohttp
 
 from aiohttp import web
@@ -22,33 +22,120 @@ SUPPORT_URL = os.environ.get("SUPPORT_URL", "https://t.me/+5suOiNvkW-43YTc9")
 ADD_TO_GROUP_URL = os.environ.get("ADD_TO_GROUP_URL", "https://t.me/?startgroup=true")
 START_STICKER_ID = os.environ.get("START_STICKER_ID", "").strip()
 START_STICKER_MESSAGE = None
+START_VIDEO_CACHE_PATH = os.path.join(tempfile.gettempdir(), "zyra_start_video_cache.mp4")
+START_VIDEO_CACHE_URL = ""
 OWNER_ID = int(os.environ.get("OWNER_ID", "0") or 0)
 LOGGER_GROUP_ID = int(os.environ.get("LOGGER_GROUP_ID", "0") or 0)
-ASSETS_DIR = os.path.join(os.path.dirname(__file__), "assets")
-WELCOME_IMAGE = os.path.join(ASSETS_DIR, "zyra_welcome.png")
-WELCOME_VIDEO_DIR = os.path.join(ASSETS_DIR, "videos")
-WELCOME_VIDEO_EXTENSIONS = {".mp4", ".m4v", ".mov", ".webm"}
-# Skip a slow video quickly; the welcome text is sent before media starts.
-WELCOME_VIDEO_SEND_TIMEOUT = max(1, min(2, int(os.environ.get("WELCOME_VIDEO_SEND_TIMEOUT", "2") or 2)))
+WELCOME_IMAGE = os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.png")
+WELCOME_ANIMATION = os.environ.get("WELCOME_ANIMATION", os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.mp4")).strip()
+WELCOME_VIDEO_DIR = os.path.join(os.path.dirname(__file__), "assets", "videos")
+WELCOME_VIDEO_BAG = []
+
+# Rotating start video URLs adapted from the reference KittuBot repository.
+START_VIDEO_URLS = [
+    'https://www.image2url.com/r2/default/videos/1793777378664-24e6cdaf-e93d-4c5a-be00-5ff2dde67135.mp4',
+    'https://www.image2url.com/r2/default/videos/1793777480370-c77acb6e-de0f-4262-82de-b9925d112011.mp4',
+    'https://www.image2url.com/r2/default/videos/1793777516710-db837e2b-9598-4663-b3e3-fe08df1046fe.mp4',
+    'https://www.image2url.com/r2/default/videos/1793777556596-27e35cd5-be79-4501-a389-69a97dfdc941.mp4',
+    'https://www.image2url.com/r2/default/videos/1793777590615-24ea387b-f155-4305-a415-13d8f9b56159.mp4',
+    'https://www.image2url.com/r2/default/videos/1793777645777-ccab11fd-aa85-474e-8d3c-6acfb4f01416.mp4',
+    'https://www.image2url.com/r2/default/videos/1793777685826-b16b7d62-d520-4dbe-b94e-809d91ae1a9c.mp4',
+    'https://www.image2url.com/r2/default/videos/1793777733775-9830bcb9-5c5c-4978-83ec-516ea4b72c73.mp4',
+    'https://www.image2url.com/r2/default/videos/1793777782306-a634fa5a-a4b8-4a3d-8019-0e017b7d37b9.mp4',
+    'https://www.image2url.com/r2/default/videos/1793777969027-c53672b2-65b1-4e6b-898c-8d2a6f846711.mp4',
+    'https://www.image2url.com/r2/default/videos/1793778142026-91548378-eee3-4382-8d3c-bf75cae322a7.mp4',
+    'https://videotourl.com/videos/1793779136616-4e46ae87-74eb-4dde-8055-7372974add4a.mp4',
+    'https://www.image2url.com/r2/default/videos/1793781261302-44decde5-6d9f-45eb-b3d5-ef66a0213014.mp4',
+    'https://www.image2url.com/r2/default/videos/1793781045682-f99fe8eb-e9d8-428d-a440-ff0811aa6fcd.mp4',
+    'https://www.image2url.com/r2/default/videos/1793781361709-49f91c16-1baf-4bcb-b7eb-b7b039632ac3.mp4',
+    'https://www.image2url.com/r2/default/videos/1793781440382-7b8108b1-a774-45f2-a373-fe3909da2d8f.mp4',
+]
+# Auto-sync the START_IMG_URL list from KITTUBOT's GitHub config.
+# The built-in URLs above remain a fallback if GitHub is unavailable.
+KITTU_CONFIG_URL = os.environ.get(
+    "KITTU_CONFIG_URL",
+    "https://raw.githubusercontent.com/sakshamvibesyt/Sem_KITTUBOT/main/KITTUBOT/config.py",
+).strip()
+VIDEO_URL_REFRESH_SECONDS = max(
+    300, int(os.environ.get("VIDEO_URL_REFRESH_SECONDS", "900") or 900)
+)
 
 
-def get_welcome_video_paths():
-    """Read the folder on every /start so added/removed videos need no code edits."""
+async def refresh_start_video_urls():
+    global START_VIDEO_URLS
     try:
-        paths = [
-            os.path.join(WELCOME_VIDEO_DIR, name)
-            for name in os.listdir(WELCOME_VIDEO_DIR)
-            if os.path.splitext(name)[1].lower() in WELCOME_VIDEO_EXTENSIONS
-            and os.path.isfile(os.path.join(WELCOME_VIDEO_DIR, name))
-            and os.path.getsize(os.path.join(WELCOME_VIDEO_DIR, name)) > 1024
+        timeout = aiohttp.ClientTimeout(total=12)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(KITTU_CONFIG_URL) as response:
+                response.raise_for_status()
+                source = await response.text()
+        match = re.search(
+            r"START_IMG_URL\s*:[^=]*=\s*(\[[\s\S]*?\])",
+            source,
+        )
+        if not match:
+            raise ValueError("START_IMG_URL list was not found in KITTUBOT config")
+        urls = ast.literal_eval(match.group(1))
+        urls = [
+            url.strip() for url in urls
+            if isinstance(url, str) and url.strip().startswith(("https://", "http://"))
         ]
-        return sorted(paths, key=lambda path: os.path.basename(path).lower())
-    except FileNotFoundError:
-        log.warning("Welcome video folder not found: %s", WELCOME_VIDEO_DIR)
-        return []
-    except Exception:
-        log.exception("Could not scan welcome video folder")
-        return []
+        if not urls:
+            raise ValueError("KITTUBOT config returned an empty video URL list")
+        START_VIDEO_URLS = urls
+        log.info("Synced %s start video URLs from KITTUBOT GitHub config", len(urls))
+    except Exception as ex:
+        log.warning(
+            "Could not refresh KITTUBOT video URLs; keeping %s fallback URLs: %s",
+            len(START_VIDEO_URLS), ex,
+        )
+
+
+async def refresh_video_urls_periodically():
+    while True:
+        await asyncio.sleep(VIDEO_URL_REFRESH_SECONDS)
+        await refresh_start_video_urls()
+
+
+async def cache_start_video():
+    """Download one URL in the background so /start never waits for a remote download."""
+    global START_VIDEO_CACHE_URL
+    urls = list(START_VIDEO_URLS)
+    random.shuffle(urls)
+    for url in urls:
+        temp_path = START_VIDEO_CACHE_PATH + ".part"
+        try:
+            timeout = aiohttp.ClientTimeout(total=45, connect=8, sock_read=25)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, allow_redirects=True) as response:
+                    response.raise_for_status()
+                    content_type = (response.headers.get("Content-Type") or "").lower()
+                    if "video/" not in content_type and "octet-stream" not in content_type:
+                        # Some hosts omit the MIME type; verify the MP4 signature below.
+                        pass
+                    total = 0
+                    with open(temp_path, "wb") as output:
+                        async for chunk in response.content.iter_chunked(256 * 1024):
+                            total += len(chunk)
+                            if total > 45 * 1024 * 1024:
+                                raise ValueError("Video exceeds 45 MB")
+                            output.write(chunk)
+            with open(temp_path, "rb") as check:
+                signature = check.read(64)
+            if total < 1024 or ("video/" not in content_type and "octet-stream" not in content_type and b"ftyp" not in signature):
+                raise ValueError("URL did not return a direct MP4/video file")
+            os.replace(temp_path, START_VIDEO_CACHE_PATH)
+            START_VIDEO_CACHE_URL = url
+            log.info("Cached welcome video from %s (%s bytes)", url, total)
+            return
+        except Exception as ex:
+            log.warning("Could not cache start video URL %s: %s", url, ex)
+            try:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+            except OSError:
+                pass
+    log.warning("No start video URL could be cached; /start will use URL preview fallback")
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -255,8 +342,37 @@ async def load_start_sticker_cache():
         log.warning("Could not preload start sticker: %s", ex)
 
 
-async def _send_start_media_sequence(chat_id, reply_to=None):
-    """Send sticker and local videos in the background after the welcome text."""
+def pick_welcome_video():
+    """Cycle through the bundled welcome videos without repeating until all were used."""
+    global WELCOME_VIDEO_BAG
+    videos = sorted(
+        os.path.join(WELCOME_VIDEO_DIR, name)
+        for name in os.listdir(WELCOME_VIDEO_DIR)
+        if name.lower().endswith((".mp4", ".mov", ".m4v"))
+    ) if os.path.isdir(WELCOME_VIDEO_DIR) else []
+    videos = [path for path in videos if os.path.isfile(path)]
+    if not videos:
+        return None
+    available = set(videos)
+    WELCOME_VIDEO_BAG = [path for path in WELCOME_VIDEO_BAG if path in available]
+    if not WELCOME_VIDEO_BAG:
+        WELCOME_VIDEO_BAG = videos[:]
+        random.shuffle(WELCOME_VIDEO_BAG)
+    return WELCOME_VIDEO_BAG.pop()
+
+
+async def send_start_menu(chat_id, reply_to=None, user_name=None):
+    # /start passes the sender name so it does not need a separate get_entity request.
+    if not user_name:
+        try:
+            user = await bot.get_entity(chat_id)
+            user_name = getattr(user, "first_name", None) or getattr(user, "title", None) or "there"
+        except Exception:
+            user_name = "there"
+    welcome_text = build_welcome_text(user_name)
+
+    # Keep the requested order: reaction (in cmd_start), saved sticker, then video + caption.
+    # There is deliberately no artificial sleep/delay between these sends.
     try:
         if START_STICKER_MESSAGE is not None:
             await bot.send_file(chat_id, START_STICKER_MESSAGE, reply_to=reply_to)
@@ -265,58 +381,25 @@ async def _send_start_media_sequence(chat_id, reply_to=None):
     except Exception as ex:
         log.warning("Start sticker could not be sent: %s", ex)
 
-    # Re-scan on every /start so added/deleted assets take effect after redeploy.
-    video_paths = get_welcome_video_paths()
-    sent_any_video = False
-    for index, video_path in enumerate(video_paths):
+    video_path = pick_welcome_video()
+    if video_path:
         try:
-            await asyncio.wait_for(
-                bot.send_file(
-                    chat_id, video_path, supports_streaming=True,
-                    reply_to=reply_to,
-                ),
-                timeout=WELCOME_VIDEO_SEND_TIMEOUT,
+            await bot.send_file(
+                chat_id, video_path, caption=welcome_text,
+                buttons=start_buttons(), parse_mode="html", reply_to=reply_to,
+                supports_streaming=True,
             )
-            sent_any_video = True
-            log.info(
-                "Welcome video sent user=%s file=%s (%s/%s)",
-                chat_id, os.path.basename(video_path), index + 1, len(video_paths),
-            )
-        except asyncio.TimeoutError:
-            log.warning(
-                "Welcome video timed out after %ss; trying next: %s",
-                WELCOME_VIDEO_SEND_TIMEOUT, os.path.basename(video_path),
-            )
+            return
         except Exception as ex:
-            log.warning(
-                "Welcome video failed; trying next: %s (%s)",
-                os.path.basename(video_path), ex,
-            )
+            log.warning("Bundled welcome video send failed; using fallback media: %s", ex)
 
-    if not sent_any_video and not video_paths:
-        try:
-            await bot.send_file(chat_id, WELCOME_IMAGE, reply_to=reply_to)
-        except Exception as ex:
-            log.warning("Welcome image fallback failed: %s", ex)
-
-
-async def send_start_menu(chat_id, reply_to=None, user_name=None):
-    # Welcome text and buttons go out immediately; large media never blocks /start.
-    if not user_name:
-        try:
-            user = await bot.get_entity(chat_id)
-            user_name = getattr(user, "first_name", None) or getattr(user, "title", None) or "there"
-        except Exception:
-            user_name = "there"
-
-    welcome_text = build_welcome_text(user_name)
-    await bot.send_message(
-        chat_id, welcome_text, buttons=start_buttons(),
-        parse_mode="html", reply_to=reply_to,
-    )
-
-    # Send media asynchronously. Failed/slow videos are skipped after max 2 seconds.
-    asyncio.create_task(_send_start_media_sequence(chat_id, reply_to=reply_to))
+    media_path = WELCOME_ANIMATION if WELCOME_ANIMATION and os.path.isfile(WELCOME_ANIMATION) else WELCOME_IMAGE
+    try:
+        await bot.send_file(chat_id, media_path, caption=welcome_text, buttons=start_buttons(),
+                            parse_mode="html", reply_to=reply_to)
+    except Exception as ex:
+        log.warning("Welcome media could not be sent; using text fallback: %s", ex)
+        await bot.send_message(chat_id, welcome_text, buttons=start_buttons(), parse_mode="html", reply_to=reply_to)
 
 
 
@@ -774,7 +857,6 @@ async def main():
     except Exception as ex:
         log.warning("Could not send deploy summary to logger group: %s", ex)
     monitor_task = asyncio.create_task(manager.monitor_connections(), name="client-reconnect-monitor")
-    log.info("Welcome video folder ready: %s video(s) found", len(get_welcome_video_paths()))
     log.info("ready")
     try:
         await bot.run_until_disconnected()
