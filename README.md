@@ -159,3 +159,9 @@ Optional DM buttons use `PROMO_LINKS` in `Label|https://example.com` format, sep
 - DM recipients must opt in with `.broadcast subscribe` and can stop with `.broadcast unsubscribe`
 
 KITTUBOT start media URL list is refreshed from `KITTU_CONFIG_URL` every `VIDEO_URL_REFRESH_SECONDS` seconds. If the source URLs are not direct downloadable videos, Zyra falls back to a hidden-link preview and then to local welcome media if preview sending also fails.
+
+## Telegram welcome-video storage channel
+
+Zyra uses the private Telegram channel configured in `main.py` as its welcome-video library. Add the Telegram bot account (the account behind `BOT_TOKEN`) to that channel as an administrator so it can read channel posts. Upload MP4 videos as normal channel posts. On startup Zyra indexes up to the latest 500 video posts and stores only their channel/message references in MongoDB; new video posts are indexed automatically while the service is running. `/start` randomly sends one of the indexed Telegram videos without downloading the file to Render. Keep the channel private and do not delete the video posts that you want to keep available.
+
+If the bot has not joined the channel, the service logs that the storage channel is not accessible and uses the bundled welcome media as a fallback.

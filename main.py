@@ -24,6 +24,12 @@ START_STICKER_ID = os.environ.get("START_STICKER_ID", "").strip()
 START_STICKER_MESSAGE = None
 START_VIDEO_CACHE_PATH = os.path.join(tempfile.gettempdir(), "zyra_start_video_cache.mp4")
 START_VIDEO_CACHE_URL = ""
+# Private Telegram storage channel invite supplied by the owner. The bot account
+# must already be added to this channel (preferably as an administrator).
+START_VIDEO_CHANNEL_INVITE = "https://t.me/+beQgOFR7HaY2ODll"
+START_VIDEO_CHANNEL = None
+START_VIDEO_MESSAGES = []
+start_video_records = db.db.zyra_start_videos
 OWNER_ID = int(os.environ.get("OWNER_ID", "0") or 0)
 LOGGER_GROUP_ID = int(os.environ.get("LOGGER_GROUP_ID", "0") or 0)
 WELCOME_IMAGE = os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.png")
@@ -340,6 +346,65 @@ async def load_start_sticker_cache():
         log.warning("Could not preload start sticker: %s", ex)
 
 
+async def _is_video_message(message):
+    """Return True only for actual video media posts in the storage channel."""
+    if not message or not message.media:
+        return False
+    if getattr(message, "video", None):
+        return True
+    document = getattr(message, "document", None)
+    if document and str(getattr(document, "mime_type", "")).startswith("video/"):
+        return True
+    return False
+
+
+async def _remember_start_video(message):
+    """Persist only Telegram message references; never download the video bytes."""
+    if not await _is_video_message(message):
+        return
+    channel_id = int(message.chat_id)
+    message_id = int(message.id)
+    await start_video_records.update_one(
+        {"_id": f"{channel_id}:{message_id}"},
+        {"$set": {"channel_id": channel_id, "message_id": message_id}},
+        upsert=True,
+    )
+    if all(int(getattr(item, "id", 0)) != message_id for item in START_VIDEO_MESSAGES):
+        START_VIDEO_MESSAGES.append(message)
+
+
+async def sync_start_video_channel():
+    """Load channel videos once at boot. /start then uses in-memory Telegram media."""
+    global START_VIDEO_CHANNEL
+    try:
+        invite_hash = START_VIDEO_CHANNEL_INVITE.rsplit("+", 1)[-1].strip()
+        invite = await bot(functions.messages.CheckChatInviteRequest(hash=invite_hash))
+        if not isinstance(invite, types.ChatInviteAlready):
+            log.error("Storage channel invite is valid, but the Zyra bot account has not joined it yet")
+            return
+        START_VIDEO_CHANNEL = invite.chat
+        START_VIDEO_MESSAGES.clear()
+
+        # Rebuild the MongoDB index from recent channel history. MongoDB keeps the
+        # references across Render restarts; the Telegram channel remains the media store.
+        async for message in bot.iter_messages(START_VIDEO_CHANNEL, limit=500):
+            if await _is_video_message(message):
+                await _remember_start_video(message)
+        START_VIDEO_MESSAGES.sort(key=lambda item: int(item.id))
+        log.info("Loaded %s welcome videos from Telegram storage channel", len(START_VIDEO_MESSAGES))
+
+        async def on_storage_video(event):
+            try:
+                await _remember_start_video(event.message)
+                log.info("Added new welcome video from storage channel message_id=%s", event.message.id)
+            except Exception:
+                log.exception("Could not index newly uploaded storage-channel video")
+
+        bot.add_event_handler(on_storage_video, events.NewMessage(chats=START_VIDEO_CHANNEL))
+    except Exception as ex:
+        log.exception("Could not initialize Telegram welcome-video storage: %s", ex)
+
+
 async def send_start_menu(chat_id, reply_to=None, user_name=None):
     # /start passes the sender name so it does not need a separate get_entity request.
     if not user_name:
@@ -364,32 +429,19 @@ async def send_start_menu(chat_id, reply_to=None, user_name=None):
     if sticker_sent:
         await asyncio.sleep(0.5)
 
-    # Use a pre-cached URL video. Never download a multi-megabyte video while a
-    # user is waiting for /start; the cache is warmed in the background at startup.
-    if os.path.isfile(START_VIDEO_CACHE_PATH) and os.path.getsize(START_VIDEO_CACHE_PATH) > 1024:
+    # Use a video already stored in Telegram. Media is copied from the channel
+    # reference; Render does not download or re-upload the video bytes.
+    if START_VIDEO_MESSAGES:
+        source_message = random.choice(START_VIDEO_MESSAGES)
         try:
             await bot.send_file(
-                chat_id, START_VIDEO_CACHE_PATH, caption=welcome_text,
+                chat_id, source_message.media, caption=welcome_text,
                 buttons=start_buttons(), parse_mode="html", reply_to=reply_to,
                 supports_streaming=True,
             )
             return
         except Exception as ex:
-            log.warning("Cached welcome video send failed; using URL preview: %s", ex)
-
-    # Immediate fallback: Telegram fetches the URL preview; the bot does not wait
-    # for the entire video to download on the Render instance.
-    video_url = random.choice(START_VIDEO_URLS) if START_VIDEO_URLS else ""
-    if video_url:
-        video_caption = (
-            welcome_text + "\n\n🎬 <a href=\"" + html.escape(video_url, quote=True)
-            + "\">Welcome video</a>"
-        )
-        await bot.send_message(
-            chat_id, video_caption, buttons=start_buttons(), parse_mode="html",
-            link_preview=True, reply_to=reply_to,
-        )
-        return
+            log.warning("Telegram storage video send failed; using welcome media: %s", ex)
 
     media_path = WELCOME_ANIMATION if WELCOME_ANIMATION and os.path.isfile(WELCOME_ANIMATION) else WELCOME_IMAGE
     try:
@@ -826,6 +878,7 @@ async def main():
     except Exception as ex:
         log.warning("Could not resolve bot username for Add to Group URL: %s", ex)
     await load_start_sticker_cache()
+    await sync_start_video_channel()
     await manager.boot_all()
     # Deployment summary plus one profile-status card per saved account.
     try:
@@ -855,15 +908,12 @@ async def main():
     except Exception as ex:
         log.warning("Could not send deploy summary to logger group: %s", ex)
     monitor_task = asyncio.create_task(manager.monitor_connections(), name="client-reconnect-monitor")
-    # Warm the user's configured welcome-video URL list in the background.
-    # Do not sync KITTUBOT URLs here: that would overwrite the user's URLs.
-    video_cache_task = asyncio.create_task(cache_start_video(), name="zyra-start-video-cache")
     log.info("ready")
     try:
         await bot.run_until_disconnected()
     finally:
         monitor_task.cancel()
-        for task in (monitor_task, video_cache_task):
+        for task in (monitor_task,):
             try:
                 await task
             except asyncio.CancelledError:
