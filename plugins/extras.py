@@ -175,7 +175,7 @@ def setup(client):
                 if getattr(user, "bot", False) or getattr(user, "deleted", False):
                     continue
                 participants.append(user)
-                if len(participants) >= 5000:
+                if len(participants) >= 20:
                     break
         except Exception as ex:
             return await e.edit("Could not get group members: <code>%s</code>" % html.escape(str(ex)[:120]))
@@ -201,51 +201,51 @@ def setup(client):
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"echo\s+(.+)$", outgoing=True))
     async def echo(e):
-        await e.edit(e.pattern_match.group(1))
+        await e.edit(e.pattern_match.group(1), parse_mode=None)
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"calc\s+(.+)$", outgoing=True))
     async def calc(e):
         try:
             result = _safe_calc(e.pattern_match.group(1).strip())
-            await e.edit("<code>%s</code>" % result)
+            await e.edit("<code>%s</code>" % html.escape(str(result)), parse_mode="html")
         except Exception as ex:
             await e.edit("Calculation error: <code>%s</code>" % str(ex)[:150])
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"reverse\s+(.+)$", outgoing=True))
     async def reverse(e):
-        await e.edit(e.pattern_match.group(1)[::-1])
+        await e.edit(e.pattern_match.group(1)[::-1], parse_mode=None)
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"clap\s+(.+)$", outgoing=True))
     async def clap(e):
-        await e.edit(" 👏 ".join(e.pattern_match.group(1).split()))
+        await e.edit(" 👏 ".join(e.pattern_match.group(1).split()), parse_mode=None)
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"emojify\s+(.+)$", outgoing=True))
     async def emojify(e):
         marks = ["✨", "🌸", "🖤", "⚡", "💫", "🌙", "🔥"]
-        await e.edit(" ".join(w + random.choice(marks) for w in e.pattern_match.group(1).split()))
+        await e.edit(" ".join(w + random.choice(marks) for w in e.pattern_match.group(1).split()), parse_mode=None)
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"spoiler\s+(.+)$", outgoing=True))
     async def spoiler(e):
         text = e.pattern_match.group(1)
-        await e.edit("<tg-spoiler>%s</tg-spoiler>" % text.replace("<", "&lt;").replace(">", "&gt;"))
+        await e.edit("<tg-spoiler>%s</tg-spoiler>" % html.escape(text), parse_mode="html")
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"type\s+(.+)$", outgoing=True))
     async def type_text(e):
         text = e.pattern_match.group(1)
         if len(text) > 300:
             return await e.edit("Text limit: 300 characters.")
-        await e.edit("...")
+        await e.edit("...", parse_mode=None)
         # Edit in small chunks to reduce Telegram edit-rate-limit errors.
         try:
             for i in range(2, len(text) + 1, 2):
-                await e.edit(text[:i])
+                await e.edit(text[:i], parse_mode=None)
                 await asyncio.sleep(0.10)
             if len(text) % 2:
                 await e.edit(text)
         except Exception as ex:
             # Leave the last successfully rendered text instead of crashing the handler.
             try:
-                await e.edit(text)
+                await e.edit(text, parse_mode=None)
             except Exception:
                 pass
 
