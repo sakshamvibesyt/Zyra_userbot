@@ -1,4 +1,4 @@
-import asyncio, logging, os, time, random, re, ast, html, tempfile
+import asyncio, logging, os, time, random, html
 import aiohttp
 
 from aiohttp import web
@@ -22,8 +22,6 @@ SUPPORT_URL = os.environ.get("SUPPORT_URL", "https://t.me/+5suOiNvkW-43YTc9")
 ADD_TO_GROUP_URL = os.environ.get("ADD_TO_GROUP_URL", "https://t.me/?startgroup=true")
 START_STICKER_ID = os.environ.get("START_STICKER_ID", "").strip()
 START_STICKER_MESSAGE = None
-START_VIDEO_CACHE_PATH = os.path.join(tempfile.gettempdir(), "zyra_start_video_cache.mp4")
-START_VIDEO_CACHE_URL = ""
 OWNER_ID = int(os.environ.get("OWNER_ID", "0") or 0)
 LOGGER_GROUP_ID = int(os.environ.get("LOGGER_GROUP_ID", "0") or 0)
 WELCOME_IMAGE = os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.png")
@@ -31,111 +29,15 @@ WELCOME_ANIMATION = os.environ.get("WELCOME_ANIMATION", os.path.join(os.path.dir
 WELCOME_VIDEO_DIR = os.path.join(os.path.dirname(__file__), "assets", "videos")
 WELCOME_VIDEO_BAG = []
 
-# Rotating start video URLs adapted from the reference KittuBot repository.
+# Direct MP4 URLs used for the /start welcome video rotation.
 START_VIDEO_URLS = [
-    'https://www.image2url.com/r2/default/videos/1793777378664-24e6cdaf-e93d-4c5a-be00-5ff2dde67135.mp4',
-    'https://www.image2url.com/r2/default/videos/1793777480370-c77acb6e-de0f-4262-82de-b9925d112011.mp4',
-    'https://www.image2url.com/r2/default/videos/1793777516710-db837e2b-9598-4663-b3e3-fe08df1046fe.mp4',
-    'https://www.image2url.com/r2/default/videos/1793777556596-27e35cd5-be79-4501-a389-69a97dfdc941.mp4',
-    'https://www.image2url.com/r2/default/videos/1793777590615-24ea387b-f155-4305-a415-13d8f9b56159.mp4',
-    'https://www.image2url.com/r2/default/videos/1793777645777-ccab11fd-aa85-474e-8d3c-6acfb4f01416.mp4',
-    'https://www.image2url.com/r2/default/videos/1793777685826-b16b7d62-d520-4dbe-b94e-809d91ae1a9c.mp4',
-    'https://www.image2url.com/r2/default/videos/1793777733775-9830bcb9-5c5c-4978-83ec-516ea4b72c73.mp4',
-    'https://www.image2url.com/r2/default/videos/1793777782306-a634fa5a-a4b8-4a3d-8019-0e017b7d37b9.mp4',
-    'https://www.image2url.com/r2/default/videos/1793777969027-c53672b2-65b1-4e6b-898c-8d2a6f846711.mp4',
-    'https://www.image2url.com/r2/default/videos/1793778142026-91548378-eee3-4382-8d3c-bf75cae322a7.mp4',
-    'https://videotourl.com/videos/1793779136616-4e46ae87-74eb-4dde-8055-7372974add4a.mp4',
-    'https://www.image2url.com/r2/default/videos/1793781261302-44decde5-6d9f-45eb-b3d5-ef66a0213014.mp4',
-    'https://www.image2url.com/r2/default/videos/1793781045682-f99fe8eb-e9d8-428d-a440-ff0811aa6fcd.mp4',
-    'https://www.image2url.com/r2/default/videos/1793781361709-49f91c16-1baf-4bcb-b7eb-b7b039632ac3.mp4',
-    'https://www.image2url.com/r2/default/videos/1793781440382-7b8108b1-a774-45f2-a373-fe3909da2d8f.mp4',
+    "https://www.image2url.com/r2/default/videos/1793904409822-271da135-72b3-4664-b931-9da3a3edde92.mp4",
+    "https://www.image2url.com/r2/default/videos/1793904536328-a3959414-4662-495a-aade-5eb8cdf7bf74.mp4",
+    "https://www.image2url.com/r2/default/videos/1793904593839-c821c4a8-6be4-4fb7-95c4-5596519c0d4e.mp4",
+    "https://www.image2url.com/r2/default/videos/1793904686803-50ec5d20-2ecc-4e04-be61-2a9645417052.mp4",
+    "https://www.image2url.com/r2/default/videos/1793904805127-9653e795-19be-418f-b7fa-4395b6f74295.mp4",
 ]
-# Auto-sync the START_IMG_URL list from KITTUBOT's GitHub config.
-# The built-in URLs above remain a fallback if GitHub is unavailable.
-KITTU_CONFIG_URL = os.environ.get(
-    "KITTU_CONFIG_URL",
-    "https://raw.githubusercontent.com/sakshamvibesyt/Sem_KITTUBOT/main/KITTUBOT/config.py",
-).strip()
-VIDEO_URL_REFRESH_SECONDS = max(
-    300, int(os.environ.get("VIDEO_URL_REFRESH_SECONDS", "900") or 900)
-)
-
-
-async def refresh_start_video_urls():
-    global START_VIDEO_URLS
-    try:
-        timeout = aiohttp.ClientTimeout(total=12)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(KITTU_CONFIG_URL) as response:
-                response.raise_for_status()
-                source = await response.text()
-        match = re.search(
-            r"START_IMG_URL\s*:[^=]*=\s*(\[[\s\S]*?\])",
-            source,
-        )
-        if not match:
-            raise ValueError("START_IMG_URL list was not found in KITTUBOT config")
-        urls = ast.literal_eval(match.group(1))
-        urls = [
-            url.strip() for url in urls
-            if isinstance(url, str) and url.strip().startswith(("https://", "http://"))
-        ]
-        if not urls:
-            raise ValueError("KITTUBOT config returned an empty video URL list")
-        START_VIDEO_URLS = urls
-        log.info("Synced %s start video URLs from KITTUBOT GitHub config", len(urls))
-    except Exception as ex:
-        log.warning(
-            "Could not refresh KITTUBOT video URLs; keeping %s fallback URLs: %s",
-            len(START_VIDEO_URLS), ex,
-        )
-
-
-async def refresh_video_urls_periodically():
-    while True:
-        await asyncio.sleep(VIDEO_URL_REFRESH_SECONDS)
-        await refresh_start_video_urls()
-
-
-async def cache_start_video():
-    """Download one URL in the background so /start never waits for a remote download."""
-    global START_VIDEO_CACHE_URL
-    urls = list(START_VIDEO_URLS)
-    random.shuffle(urls)
-    for url in urls:
-        temp_path = START_VIDEO_CACHE_PATH + ".part"
-        try:
-            timeout = aiohttp.ClientTimeout(total=45, connect=8, sock_read=25)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(url, allow_redirects=True) as response:
-                    response.raise_for_status()
-                    content_type = (response.headers.get("Content-Type") or "").lower()
-                    if "video/" not in content_type and "octet-stream" not in content_type:
-                        # Some hosts omit the MIME type; verify the MP4 signature below.
-                        pass
-                    total = 0
-                    with open(temp_path, "wb") as output:
-                        async for chunk in response.content.iter_chunked(256 * 1024):
-                            total += len(chunk)
-                            if total > 45 * 1024 * 1024:
-                                raise ValueError("Video exceeds 45 MB")
-                            output.write(chunk)
-            with open(temp_path, "rb") as check:
-                signature = check.read(64)
-            if total < 1024 or ("video/" not in content_type and "octet-stream" not in content_type and b"ftyp" not in signature):
-                raise ValueError("URL did not return a direct MP4/video file")
-            os.replace(temp_path, START_VIDEO_CACHE_PATH)
-            START_VIDEO_CACHE_URL = url
-            log.info("Cached welcome video from %s (%s bytes)", url, total)
-            return
-        except Exception as ex:
-            log.warning("Could not cache start video URL %s: %s", url, ex)
-            try:
-                if os.path.exists(temp_path):
-                    os.unlink(temp_path)
-            except OSError:
-                pass
-    log.warning("No start video URL could be cached; /start will use URL preview fallback")
+START_VIDEO_BAG = []
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -343,26 +245,42 @@ async def load_start_sticker_cache():
 
 
 def pick_welcome_video():
-    """Cycle through the bundled welcome videos without repeating until all were used."""
-    global WELCOME_VIDEO_BAG
-    videos = sorted(
-        os.path.join(WELCOME_VIDEO_DIR, name)
-        for name in os.listdir(WELCOME_VIDEO_DIR)
-        if name.lower().endswith((".mp4", ".mov", ".m4v"))
-    ) if os.path.isdir(WELCOME_VIDEO_DIR) else []
-    videos = [path for path in videos if os.path.isfile(path)]
-    if not videos:
-        return None
-    available = set(videos)
-    WELCOME_VIDEO_BAG = [path for path in WELCOME_VIDEO_BAG if path in available]
-    if not WELCOME_VIDEO_BAG:
-        WELCOME_VIDEO_BAG = videos[:]
-        random.shuffle(WELCOME_VIDEO_BAG)
-    return WELCOME_VIDEO_BAG.pop()
+    """Choose a remote MP4 without repeating until the current URL cycle is used."""
+    global START_VIDEO_BAG
+    available = list(START_VIDEO_URLS)
+    START_VIDEO_BAG = [url for url in START_VIDEO_BAG if url in available]
+    if not START_VIDEO_BAG:
+        START_VIDEO_BAG = available[:]
+        random.shuffle(START_VIDEO_BAG)
+    return START_VIDEO_BAG.pop() if START_VIDEO_BAG else None
+
+
+async def run_start_animation(chat_id):
+    """Show compact hacker-style boot stages. No intentional sleeps are used."""
+    stages = [
+        "<code>Loading......</code>",
+        "<b>𝒁𝒀𝑹𝑨 ~ 𝑼𝑺𝑬𝑹𝑩𝑶𝑻™</b>",
+        ("<b>⚡ SYSTEM INITIALIZED</b>\n"
+         "<code>[ OK ] Core modules loaded</code>\n"
+         "<code>[ OK ] Secure session ready</code>\n"
+         "<code>[ OK ] Welcome protocol online</code>"),
+        ("<b>⌁ SERVER LOADER</b>\n"
+         "<code>●      ·      ·</code>\n"
+         "<code>·      ●      ·</code>\n"
+         "<code>·      ·      ●</code>\n\n"
+         "<b>GET START</b>"),
+    ]
+    status = await bot.send_message(chat_id, stages[0], parse_mode="html")
+    for stage in stages[1:]:
+        try:
+            await status.edit(stage, parse_mode="html")
+        except Exception as ex:
+            log.warning("Start animation edit failed: %s", ex)
+            break
+    return status
 
 
 async def send_start_menu(chat_id, reply_to=None, user_name=None):
-    # /start passes the sender name so it does not need a separate get_entity request.
     if not user_name:
         try:
             user = await bot.get_entity(chat_id)
@@ -371,8 +289,7 @@ async def send_start_menu(chat_id, reply_to=None, user_name=None):
             user_name = "there"
     welcome_text = build_welcome_text(user_name)
 
-    # Keep the requested order: reaction (in cmd_start), saved sticker, then video + caption.
-    # There is deliberately no artificial sleep/delay between these sends.
+    # Existing saved sticker is sent immediately after the reaction.
     try:
         if START_STICKER_MESSAGE is not None:
             await bot.send_file(chat_id, START_STICKER_MESSAGE, reply_to=reply_to)
@@ -381,17 +298,20 @@ async def send_start_menu(chat_id, reply_to=None, user_name=None):
     except Exception as ex:
         log.warning("Start sticker could not be sent: %s", ex)
 
-    video_path = pick_welcome_video()
-    if video_path:
+    # Run the requested message-edit boot sequence before the welcome video.
+    await run_start_animation(chat_id)
+
+    video_url = pick_welcome_video()
+    if video_url:
         try:
             await bot.send_file(
-                chat_id, video_path, caption=welcome_text,
+                chat_id, video_url, caption=welcome_text,
                 buttons=start_buttons(), parse_mode="html", reply_to=reply_to,
                 supports_streaming=True,
             )
             return
         except Exception as ex:
-            log.warning("Bundled welcome video send failed; using fallback media: %s", ex)
+            log.warning("Remote welcome video send failed; using fallback media: %s", ex)
 
     media_path = WELCOME_ANIMATION if WELCOME_ANIMATION and os.path.isfile(WELCOME_ANIMATION) else WELCOME_IMAGE
     try:
@@ -596,8 +516,7 @@ async def cmd_help(e):
 
 @bot.on(events.NewMessage(pattern=r"^/logout$"))
 async def cmd_logout(e):
-    if not await require_panel_access(e):
-        return
+    # Self-service only: users can disconnect their own saved account, never another user's.
     uid = e.sender_id
     await manager.kill(uid)
     await db.users.delete_one({"_id": uid})
