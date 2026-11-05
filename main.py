@@ -256,24 +256,54 @@ def pick_welcome_video():
 
 
 async def run_start_animation(chat_id):
-    """Show compact hacker-style boot stages. No intentional sleeps are used."""
+    """Show a quote-style ZYRA engine boot sequence by editing one message; no artificial sleeps."""
     stages = [
-        "<code>Loading......</code>",
-        "<b>𝒁𝒀𝑹𝑨 ~ 𝑼𝑺𝑬𝑹𝑩𝑶𝑻™</b>",
-        ("<b>⚡ SYSTEM INITIALIZED</b>\n"
-         "<code>[ OK ] Core modules loaded</code>\n"
-         "<code>[ OK ] Secure session ready</code>\n"
-         "<code>[ OK ] Welcome protocol online</code>"),
-        ("<b>⌁ SERVER LOADER</b>\n"
-         "<code>●      ·      ·</code>\n"
-         "<code>·      ●      ·</code>\n"
-         "<code>·      ·      ●</code>\n\n"
-         "<b>GET START</b>"),
+        (
+            "<blockquote>"
+            "╭━━━『 𝗭𝗬𝗥𝗔 𝗘𝗡𝗚𝗜𝗡𝗘 』━━━╮\n"
+            "\n"
+            "⟡ <code>Initializing core......</code>\n"
+            "╰━━━━━━━━━━━━━━━━━━━━╯"
+            "</blockquote>"
+        ),
+        (
+            "<blockquote>"
+            "╭━━━『 𝗭𝗬𝗥𝗔 𝗘𝗡𝗚𝗜𝗡𝗘 』━━━╮\n"
+            "\n"
+            "⌁ <code>Connecting to main server...</code>\n"
+            "⌁ <code>Loading userbot modules...</code>\n"
+            "⌁ <code>Securing user session...</code>\n"
+            "╰━━━━━━━━━━━━━━━━━━━━╯"
+            "</blockquote>"
+        ),
+        (
+            "<blockquote>"
+            "╭━━━『 𝗦𝗬𝗦𝗧𝗘𝗠 𝗖𝗛𝗘𝗖𝗞 』━━━╮\n"
+            "\n"
+            "<code>[ ✓ ] Core modules loaded</code>\n"
+            "<code>[ ✓ ] Secure session ready</code>\n"
+            "<code>[ ✓ ] Services connected</code>\n"
+            "╰━━━━━━━━━━━━━━━━━━━━╯"
+            "</blockquote>"
+        ),
+        (
+            "<blockquote>"
+            "╭━━━『 𝗭𝗬𝗥𝗔 𝗘𝗡𝗚𝗜𝗡𝗘 』━━━╮\n"
+            "\n"
+            "<code>▰▰▰▰▰▰▰▰▰▰ 100%</code>\n"
+            "\n"
+            "⚡ <b>ENGINE INITIALIZED</b>\n"
+            "✓ <b>ALL SYSTEMS ONLINE</b>\n"
+            "╰━━━━━━━━━━━━━━━━━━━━╯\n"
+            "\n"
+            "<b>✦ GET STARTED ✦</b>"
+            "</blockquote>"
+        ),
     ]
-    status = await bot.send_message(chat_id, stages[0], parse_mode="html")
+    status = await bot.send_message(chat_id, stages[0], parse_mode="html", link_preview=False)
     for stage in stages[1:]:
         try:
-            await status.edit(stage, parse_mode="html")
+            await status.edit(stage, parse_mode="html", link_preview=False)
         except Exception as ex:
             log.warning("Start animation edit failed: %s", ex)
             break
@@ -289,7 +319,10 @@ async def send_start_menu(chat_id, reply_to=None, user_name=None):
             user_name = "there"
     welcome_text = build_welcome_text(user_name)
 
-    # Existing saved sticker is sent immediately after the reaction.
+    # First show the quote-style engine animation in one message.
+    await run_start_animation(chat_id)
+
+    # Then send the already-saved sticker, followed immediately by the welcome video.
     try:
         if START_STICKER_MESSAGE is not None:
             await bot.send_file(chat_id, START_STICKER_MESSAGE, reply_to=reply_to)
@@ -297,9 +330,6 @@ async def send_start_menu(chat_id, reply_to=None, user_name=None):
             await bot.send_file(chat_id, START_STICKER_ID, reply_to=reply_to)
     except Exception as ex:
         log.warning("Start sticker could not be sent: %s", ex)
-
-    # Run the requested message-edit boot sequence before the welcome video.
-    await run_start_animation(chat_id)
 
     video_url = pick_welcome_video()
     if video_url:
