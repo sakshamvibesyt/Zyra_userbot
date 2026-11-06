@@ -165,3 +165,20 @@ KITTUBOT start media URL list is refreshed from `KITTU_CONFIG_URL` every `VIDEO_
 Zyra uses the private Telegram channel configured in `main.py` as its welcome-video library. Add the Telegram bot account (the account behind `BOT_TOKEN`) to that channel as an administrator so it can read channel posts. Upload MP4 videos as normal channel posts. On startup Zyra indexes up to the latest 500 video posts and stores only their channel/message references in MongoDB; new video posts are indexed automatically while the service is running. `/start` randomly sends one of the indexed Telegram videos without downloading the file to Render. Keep the channel private and do not delete the video posts that you want to keep available.
 
 If the bot has not joined the channel, the service logs that the storage channel is not accessible and uses the bundled welcome media as a fallback.
+
+
+## Group member archive and welcome panel
+
+The `groupwelcome` plugin is loaded automatically for connected user accounts.
+
+- `.tagjoin` in a group imports the members Telegram makes available (up to 5,000). In private chat use `.tagjoin -100GROUP_ID`; if the account has exactly one group dialog, `.tagjoin` can target that group automatically.
+- `.tagcount`, `.taglist`, and `.tagclear` manage the saved list for the current group. `.tagclear` asks for confirmation.
+- Incoming group senders and newly joined members are stored separately per connected account and group. Only basic profile fields are saved; message text is not stored.
+- `/setwelcome` in a group opens the per-group welcome settings panel. From private chat use `/setwelcome -100GROUP_ID`.
+- Welcome text: `.welcometext Welcome {first_name} to {group_name}!`
+- Welcome background: reply to a photo with `.welcomepicture`.
+- URL button: `.welcomebutton Rules | https://example.com`; remove buttons with `.welcomebuttonclear`.
+- Welcome variables: `{group_name}`, `{first_name}`, `{username}`, `{user_id}`.
+- The generated black/purple neon welcome card displays **WELCOME TO MY GROUP**, the new member's name, and their Telegram profile photo when available.
+
+`TagAll` continues to use its existing admin-only check, 150-member cap, pacing, and cancellation command. Telegram may restrict complete participant enumeration, so `.tagjoin` can only import members exposed by Telegram to the connected account.
