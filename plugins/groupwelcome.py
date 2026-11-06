@@ -143,50 +143,100 @@ def setup(client):
 
     @client.on(events.ChatAction)
     async def archive_joined_member(event):
-        if not (event.user_joined or event.user_added):
-            return
+        """Archive and welcome every user involved in a join/add action.
+
+        Telethon may return a list from get_users()/get_user() when several
+        members are added in one service message. Handle both single users and
+        lists so one multi-add event cannot break the welcome handler.
+        """
         try:
-            user = await event.get_user()
-            if user:
-                await save_member(event.chat_id, user)
-            # Welcome is sent once per joined user; skip if this event is not about one user.
-            if not user:
+            if not (event.user_joined or event.user_added):
                 return
+
+            # get_users() is the most reliable way to retrieve all users from
+            # MessageActionChatAddUser. Fall back to get_user() for older
+            # Telethon versions / self-join events.
+            joined_users = []
+            try:
+                result = await event.get_users()
+            except (AttributeError, TypeError):
+                result = await event.get_user()
+            except Exception:
+                result = await event.get_user()
+
+            if result:
+                joined_users = result if isinstance(result, (list, tuple)) else [result]
+
+            # Some Telethon versions return no users from get_users() for a
+            # self-join service message; get_user() can still resolve it.
+            if not joined_users:
+                result = await event.get_user()
+                if result:
+                    joined_users = result if isinstance(result, (list, tuple)) else [result]
+
+            if not joined_users:
+                log.warning("Join action had no resolvable users chat_id=%s", event.chat_id)
+                return
+
             cfg = await welcome.find_one({"uid": uid, "chat_id": int(event.chat_id)})
             if not cfg or not cfg.get("enabled", True):
+                # Still archive the members even when welcome is disabled.
+                for joined_user in joined_users:
+                    await save_member(event.chat_id, joined_user)
                 return
+
             group = await event.get_chat()
             group_name = getattr(group, "title", None) or "Our Group"
-            first_name = getattr(user, "first_name", None) or "New Member"
-            username = getattr(user, "username", None) or ""
-            avatar = None
-            try:
-                avatar = await client.download_profile_photo(user, file=bytes)
-            except Exception:
-                pass
-            image = _make_welcome_image(first_name, group_name, avatar, cfg.get("background"))
-            values = {
-                "group_name": group_name, "first_name": first_name,
-                "username": ("@" + username) if username else "",
-                "user_id": str(user.id),
-            }
             template = cfg.get("text", "Welcome {first_name} to {group_name}! 💜")
-            try:
-                caption = template.format(**values)
-            except Exception:
-                caption = f"Welcome {first_name} to {group_name}! 💜"
-            caption = html.escape(caption)
             buttons = []
             for item in cfg.get("buttons", [])[:4]:
                 label, url = item.get("label"), item.get("url")
                 if label and url and re.match(r"^https?://", url, re.I):
                     buttons.append(Button.url(label[:40], url))
-            if image:
-                await client.send_file(event.chat_id, image, caption=caption, buttons=buttons or None, parse_mode="html")
-            else:
-                await client.send_message(event.chat_id, caption, buttons=buttons or None, parse_mode="html")
+
+            for user in joined_users:
+                if not user or getattr(user, "bot", False) or getattr(user, "deleted", False):
+                    continue
+                try:
+                    await save_member(event.chat_id, user)
+                    first_name = getattr(user, "first_name", None) or "New Member"
+                    username = getattr(user, "username", None) or ""
+                    avatar = None
+                    try:
+                        avatar = await client.download_profile_photo(user, file=bytes)
+                    except Exception:
+                        log.debug("Could not download joined member avatar", exc_info=True)
+
+                    image = _make_welcome_image(first_name, group_name, avatar, cfg.get("background"))
+                    values = {
+                        "group_name": group_name,
+                        "first_name": first_name,
+                        "username": ("@" + username) if username else "",
+                        "user_id": str(user.id),
+                    }
+                    try:
+                        caption = template.format(**values)
+                    except Exception:
+                        caption = f"Welcome {first_name} to {group_name}! 💜"
+                    caption = html.escape(caption)
+
+                    if image:
+                        await client.send_file(
+                            event.chat_id, image, caption=caption,
+                            buttons=buttons or None, parse_mode="html"
+                        )
+                    else:
+                        await client.send_message(
+                            event.chat_id, caption,
+                            buttons=buttons or None, parse_mode="html"
+                        )
+                except Exception:
+                    log.exception(
+                        "Could not process joined user=%s chat_id=%s",
+                        getattr(user, "id", "unknown"), event.chat_id
+                    )
         except Exception:
-            log.exception("Group welcome handler failed chat_id=%s", event.chat_id)
+            log.exception("Group welcome handler failed chat_id=%s", getattr(event, "chat_id", "unknown"))
 
     async def resolve_target(event, target):
         if event.is_group:
