@@ -77,7 +77,8 @@ def setup(client):
             f"<code>{prefix}emojify text</code> · add random emojis\n"
             f"<code>{prefix}spoiler text</code> · spoiler formatting\n"
             f"<code>{prefix}type text</code> · typewriter effect\n"
-            f"<code>{prefix}tagall [message]</code> · paced separate member mentions (max 20)\n"
+            f"<code>{prefix}tagall [message]</code> · quote-style mentions for up to 150 recently active members\n"
+            f"<code>{prefix}tagcancel</code> · stop the active TagAll process\n"
             f"<code>{prefix}addraid msg1 | msg2</code> · save message rotation\n"
             f"<code>{prefix}raid 5</code> · send up to 10 saved messages\n"
             f"<code>{prefix}clearraid</code> · clear saved messages\n\n"
@@ -163,36 +164,143 @@ def setup(client):
         else:
             await e.edit("No active rotation in this chat.")
 
+    # Kittu-style active-member tracking: keep each connected account and group separate.
+    # Only lightweight public profile fields are stored; message contents are never saved.
+    tagall_members = database.db.zyra_tagall_members
+    tagall_running = {}
+    TAGALL_MEMBER_LIMIT = 150
+    TAGALL_DELAY_SECONDS = 2.5
+
+    @client.on(events.NewMessage(incoming=True))
+    async def track_tagall_active_member(event):
+        if not event.is_group or not event.sender_id or event.sender_id == uid:
+            return
+        try:
+            sender = await event.get_sender()
+            if not sender or getattr(sender, "bot", False) or getattr(sender, "deleted", False):
+                return
+            member_info = {
+                "id": sender.id,
+                "name": getattr(sender, "first_name", None) or "Member",
+                "username": getattr(sender, "username", None) or "",
+                "last_seen": time.time(),
+            }
+            # Same bounded recent-member strategy as KittuBot: max 150 per group.
+            await tagall_members.update_one(
+                {"uid": uid, "chat_id": event.chat_id},
+                {"$pull": {"active_members": {"id": sender.id}}},
+                upsert=True,
+            )
+            await tagall_members.update_one(
+                {"uid": uid, "chat_id": event.chat_id},
+                {"$push": {"active_members": {"$each": [member_info], "$slice": -TAGALL_MEMBER_LIMIT}}},
+            )
+        except Exception:
+            # Tracking is best-effort and must never interrupt normal message handling.
+            return
+
+    async def _tagall_is_group_admin(chat_id):
+        try:
+            permissions = await client.get_permissions(chat_id, uid)
+            return bool(
+                getattr(permissions, "is_admin", False)
+                or getattr(permissions, "is_creator", False)
+            )
+        except Exception:
+            return False
+
     @client.on(events.NewMessage(pattern=r"^" + p + r"tagall(?:\s+([\s\S]+))?$", outgoing=True))
     async def tagall(e):
-        # Explicitly paced and capped: one separate reply/mention per member, max 20 per command.
+        if not e.is_group:
+            return await e.edit("This command works only in groups.")
+        if not await _tagall_is_group_admin(e.chat_id):
+            return await e.edit("⛔ <b>Admin-only command.</b> Your connected account must be a group admin.")
+
+        key = (uid, e.chat_id)
+        if key in tagall_running:
+            return await e.edit("A TagAll process is already running here. Use <code>%stagcancel</code> to stop it." % client.prefix)
+
         custom = (e.pattern_match.group(1) or "").strip()
         if not custom:
-            custom = "👋 Everyone, join the chat when you're free!"
-        try:
-            participants = []
-            async for user in client.iter_participants(e.chat_id):
-                if getattr(user, "bot", False) or getattr(user, "deleted", False):
-                    continue
-                participants.append(user)
-                if len(participants) >= 20:
-                    break
-        except Exception as ex:
-            return await e.edit("Could not get group members: <code>%s</code>" % html.escape(str(ex)[:120]))
-        if not participants:
-            return await e.edit("No mentionable members found.")
-        await e.delete()
-        for user in participants:
-            name = html.escape((getattr(user, "first_name", None) or "there"))
-            mention = '<a href="tg://user?id=%s">%s</a>' % (user.id, name)
-            # Quote-style custom text; send each mention as a separate message.
-            quote = html.escape(custom[:700])
-            try:
-                await client.send_message(e.chat_id, "<blockquote>%s</blockquote>\n%s" % (quote, mention), parse_mode="html")
-            except Exception:
-                continue
-            await asyncio.sleep(2)
+            custom = "👋 Everyone, please check this group announcement!"
+        custom = custom[:700]
 
+        member_doc = await tagall_members.find_one({"uid": uid, "chat_id": e.chat_id})
+        members = (member_doc or {}).get("active_members", [])
+        members = sorted(members, key=lambda item: item.get("last_seen", 0), reverse=True)[:TAGALL_MEMBER_LIMIT]
+        if not members:
+            return await e.edit(
+                "No recently active members are recorded yet. Members will be added as they send messages; try TagAll later."
+            )
+
+        stop_event = asyncio.Event()
+        tagall_running[key] = stop_event
+        try:
+            await e.delete()
+            status = await client.send_message(
+                e.chat_id,
+                "📢 <b>TagAll started</b>\n"
+                f"Tracking <b>{len(members)}</b> recently active members (maximum {TAGALL_MEMBER_LIMIT}).\n"
+                f"One quoted message per member. Use <code>{html.escape(client.prefix)}tagcancel</code> to stop.",
+                parse_mode="html",
+            )
+            sent = 0
+            failed = 0
+            for index, member in enumerate(members, start=1):
+                if stop_event.is_set():
+                    break
+                member_id = member.get("id")
+                if not member_id:
+                    failed += 1
+                    continue
+                display = html.escape((member.get("name") or "Member")[:64])
+                mention = f'<a href="tg://user?id={int(member_id)}">{display}</a>'
+                # Each outgoing message contains exactly one mention, in quote style.
+                payload = f"<blockquote>{html.escape(custom)}</blockquote>\n{mention}"
+                try:
+                    await client.send_message(e.chat_id, payload, parse_mode="html", link_preview=False)
+                    sent += 1
+                except Exception as ex:
+                    # Respect Telegram FloodWait and retry this single mention once.
+                    wait_seconds = getattr(ex, "seconds", None)
+                    if wait_seconds is not None:
+                        try:
+                            await status.edit(
+                                f"⏳ <b>Telegram rate limit</b>\nWaiting {int(wait_seconds)} seconds before continuing…",
+                                parse_mode="html",
+                            )
+                            await asyncio.sleep(max(1, int(wait_seconds) + 1))
+                            if stop_event.is_set():
+                                break
+                            await client.send_message(e.chat_id, payload, parse_mode="html", link_preview=False)
+                            sent += 1
+                        except Exception:
+                            failed += 1
+                    else:
+                        failed += 1
+                if index < len(members) and not stop_event.is_set():
+                    await asyncio.sleep(TAGALL_DELAY_SECONDS)
+
+            result = "🛑 <b>TagAll stopped.</b>" if stop_event.is_set() else "✅ <b>TagAll completed.</b>"
+            await status.edit(
+                f"{result}\n\n"
+                f"• Mentions sent: <b>{sent}</b>\n"
+                f"• Failed: <b>{failed}</b>\n"
+                f"• Active-member list: <b>{len(members)}</b>",
+                parse_mode="html",
+            )
+        finally:
+            tagall_running.pop(key, None)
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"tagcancel$", outgoing=True))
+    async def tagall_cancel(e):
+        key = (uid, e.chat_id)
+        running = tagall_running.get(key)
+        if running:
+            running.set()
+            await e.edit("🛑 <b>TagAll cancellation requested.</b>")
+        else:
+            await e.edit("No TagAll process is running in this group.")
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"alive$", outgoing=True))
     async def alive(e):
