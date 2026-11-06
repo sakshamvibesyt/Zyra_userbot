@@ -2,4 +2,3 @@ telethon
 aiohttp
 motor
 cryptography
-Pillow

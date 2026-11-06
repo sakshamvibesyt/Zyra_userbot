@@ -28,16 +28,19 @@ WELCOME_IMAGE = os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.
 WELCOME_ANIMATION = os.environ.get("WELCOME_ANIMATION", os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.mp4")).strip()
 WELCOME_VIDEO_DIR = os.path.join(os.path.dirname(__file__), "assets", "videos")
 WELCOME_VIDEO_BAG = []
+START_ANIMATION_ENABLED = os.environ.get("START_ANIMATION_ENABLED", "false").lower() in ("1", "true", "yes")
 
-# Direct MP4 URLs used for the /start welcome video rotation.
-START_VIDEO_URLS = [
-    "https://www.image2url.com/r2/default/videos/1793904409822-271da135-72b3-4664-b931-9da3a3edde92.mp4",
-    "https://www.image2url.com/r2/default/videos/1793904536328-a3959414-4662-495a-aade-5eb8cdf7bf74.mp4",
-    "https://www.image2url.com/r2/default/videos/1793904593839-c821c4a8-6be4-4fb7-95c4-5596519c0d4e.mp4",
-    "https://www.image2url.com/r2/default/videos/1793904686803-50ec5d20-2ecc-4e04-be61-2a9645417052.mp4",
-    "https://www.image2url.com/r2/default/videos/1793904805127-9653e795-19be-418f-b7fa-4395b6f74295.mp4",
-]
-START_VIDEO_BAG = []
+
+def available_welcome_videos():
+    """Return bundled MP4 files; local assets work without third-party hosting."""
+    try:
+        return sorted(
+            os.path.join(WELCOME_VIDEO_DIR, name)
+            for name in os.listdir(WELCOME_VIDEO_DIR)
+            if name.lower().endswith(".mp4") and os.path.isfile(os.path.join(WELCOME_VIDEO_DIR, name))
+        )
+    except OSError:
+        return []
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -245,14 +248,14 @@ async def load_start_sticker_cache():
 
 
 def pick_welcome_video():
-    """Choose a remote MP4 without repeating until the current URL cycle is used."""
-    global START_VIDEO_BAG
-    available = list(START_VIDEO_URLS)
-    START_VIDEO_BAG = [url for url in START_VIDEO_BAG if url in available]
-    if not START_VIDEO_BAG:
-        START_VIDEO_BAG = available[:]
-        random.shuffle(START_VIDEO_BAG)
-    return START_VIDEO_BAG.pop() if START_VIDEO_BAG else None
+    """Choose a bundled welcome MP4 without repeating until the cycle is used."""
+    global WELCOME_VIDEO_BAG
+    available = available_welcome_videos()
+    WELCOME_VIDEO_BAG = [path for path in WELCOME_VIDEO_BAG if path in available]
+    if not WELCOME_VIDEO_BAG:
+        WELCOME_VIDEO_BAG = available[:]
+        random.shuffle(WELCOME_VIDEO_BAG)
+    return WELCOME_VIDEO_BAG.pop() if WELCOME_VIDEO_BAG else None
 
 
 async def run_start_animation(chat_id):
@@ -309,8 +312,9 @@ async def send_start_menu(chat_id, reply_to=None, user_name=None):
             user_name = "there"
     welcome_text = build_welcome_text(user_name)
 
-    # Show the paced engine animation; it deletes itself before sticker/video.
-    await run_start_animation(chat_id)
+    # Optional boot animation. Disabled by default to keep /start fast.
+    if START_ANIMATION_ENABLED:
+        await run_start_animation(chat_id)
 
     # Then send the already-saved sticker, followed immediately by the welcome video.
     try:
@@ -321,17 +325,17 @@ async def send_start_menu(chat_id, reply_to=None, user_name=None):
     except Exception as ex:
         log.warning("Start sticker could not be sent: %s", ex)
 
-    video_url = pick_welcome_video()
-    if video_url:
+    video_path = pick_welcome_video()
+    if video_path:
         try:
             await bot.send_file(
-                chat_id, video_url, caption=welcome_text,
+                chat_id, video_path, caption=welcome_text,
                 buttons=start_buttons(), parse_mode="html", reply_to=reply_to,
                 supports_streaming=True,
             )
             return
         except Exception as ex:
-            log.warning("Remote welcome video send failed; using fallback media: %s", ex)
+            log.warning("Bundled welcome video send failed; using fallback media: %s", ex)
 
     media_path = WELCOME_ANIMATION if WELCOME_ANIMATION and os.path.isfile(WELCOME_ANIMATION) else WELCOME_IMAGE
     try:
