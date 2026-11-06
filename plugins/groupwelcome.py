@@ -141,89 +141,84 @@ def setup(client):
         except Exception:
             log.debug("Member auto-archive failed", exc_info=True)
 
+    async def send_welcome(chat_id, user, cfg=None):
+        """Send the configured welcome for one user; shared by joins, tests and preview."""
+        if not user:
+            return False
+        await ensure_indexes()
+        cfg = cfg or await welcome.find_one({"uid": uid, "chat_id": int(chat_id)}) or {}
+        if not cfg.get("enabled", True):
+            return False
+        try:
+            group = await client.get_entity(chat_id)
+        except Exception:
+            group = None
+        group_name = getattr(group, "title", None) or "Our Group"
+        first_name = getattr(user, "first_name", None) or "New Member"
+        username = getattr(user, "username", None) or ""
+        avatar = None
+        try:
+            avatar = await client.download_profile_photo(user, file=bytes)
+        except Exception:
+            pass
+        image = _make_welcome_image(first_name, group_name, avatar, cfg.get("background"))
+        values = {
+            "group_name": group_name,
+            "first_name": first_name,
+            "username": ("@" + username) if username else "",
+            "user_id": str(user.id),
+        }
+        template = cfg.get("text", "Welcome {first_name} to {group_name}! 💜")
+        try:
+            caption = template.format(**values)
+        except Exception:
+            log.warning("Invalid welcome template for chat_id=%s; using default", chat_id)
+            caption = f"Welcome {first_name} to {group_name}! 💜"
+        caption = html.escape(caption)
+        buttons = []
+        for item in cfg.get("buttons", [])[:4]:
+            label, url = item.get("label"), item.get("url")
+            if label and url and re.match(r"^https?://", url, re.I):
+                buttons.append(Button.url(label[:40], url))
+        if image:
+            await client.send_file(chat_id, image, caption=caption, buttons=buttons or None, parse_mode="html")
+        else:
+            await client.send_message(chat_id, caption, buttons=buttons or None, parse_mode="html")
+        return True
+
     @client.on(events.ChatAction)
     async def archive_joined_member(event):
-        """Archive and welcome actual joiners, not the user who performed the add."""
+        """Handle single joins and Telegram service messages adding multiple users."""
         try:
-            action_message = getattr(event, "action_message", None)
-            action = getattr(action_message, "action", None)
-            action_name = type(action).__name__ if action is not None else ""
-
-            # ChatAction.user_joined/user_added are about the connected account,
-            # not every member in the group. Inspect the service-message action
-            # so joins by link and members added by another admin are detected.
-            joined_ids = []
-            if action_name == "MessageActionChatAddUser":
-                joined_ids = list(getattr(action, "users", []) or [])
-            elif action_name in (
-                "MessageActionChatJoinedByLink",
-                "MessageActionChatJoinedByRequest",
-            ):
-                # For link/request joins, the service message sender is the new member.
-                sender_id = getattr(action_message, "sender_id", None)
-                if sender_id:
-                    joined_ids = [sender_id]
-
-            if not joined_ids:
+            if not (event.user_joined or event.user_added):
                 return
-
-            cfg = await welcome.find_one({"uid": uid, "chat_id": int(event.chat_id)})
-            if not cfg or not cfg.get("enabled", True):
-                return
-
-            group = await event.get_chat()
-            group_name = getattr(group, "title", None) or "Our Group"
-            buttons = []
-            for item in cfg.get("buttons", [])[:4]:
-                label, url = item.get("label"), item.get("url")
-                if label and url and re.match(r"^https?://", url, re.I):
-                    buttons.append(Button.url(label[:40], url))
-
-            template = cfg.get("text", "Welcome {first_name} to {group_name}! 💜")
-            for joined_id in dict.fromkeys(joined_ids):
+            # Telethon can expose one user or a list when several members are added.
+            joined_users = list(getattr(event, "users", None) or [])
+            if not joined_users:
                 try:
-                    user = await client.get_entity(joined_id)
-                    if not user:
-                        continue
-                    await save_member(event.chat_id, user)
-                    first_name = getattr(user, "first_name", None) or "New Member"
-                    username = getattr(user, "username", None) or ""
-                    avatar = None
-                    try:
-                        avatar = await client.download_profile_photo(user, file=bytes)
-                    except Exception:
-                        log.debug("Could not download joined member avatar", exc_info=True)
-
-                    image = _make_welcome_image(first_name, group_name, avatar, cfg.get("background"))
-                    values = {
-                        "group_name": group_name,
-                        "first_name": first_name,
-                        "username": ("@" + username) if username else "",
-                        "user_id": str(user.id),
-                    }
-                    try:
-                        caption = template.format(**values)
-                    except Exception:
-                        log.exception("Invalid welcome template; using fallback")
-                        caption = f"Welcome {first_name} to {group_name}! 💜"
-                    caption = html.escape(caption)
-                    if image:
-                        await client.send_file(
-                            event.chat_id, image, caption=caption,
-                            buttons=buttons or None, parse_mode="html"
-                        )
-                    else:
-                        await client.send_message(
-                            event.chat_id, caption,
-                            buttons=buttons or None, parse_mode="html"
-                        )
+                    one_user = await event.get_user()
+                    if one_user:
+                        joined_users = [one_user]
                 except Exception:
-                    log.exception(
-                        "Could not welcome joined member %s in chat_id=%s",
-                        joined_id, event.chat_id
-                    )
+                    pass
+            if not joined_users:
+                for user_id in (getattr(event, "user_ids", None) or []):
+                    try:
+                        joined_users.append(await client.get_entity(user_id))
+                    except Exception:
+                        log.debug("Could not resolve joined user id=%s", user_id)
+            if not joined_users:
+                log.warning("Join event received without resolvable users chat_id=%s", event.chat_id)
+                return
+            cfg = await welcome.find_one({"uid": uid, "chat_id": int(event.chat_id)})
+            for user in joined_users:
+                if not user:
+                    continue
+                await save_member(event.chat_id, user)
+                if cfg and cfg.get("enabled", True):
+                    await send_welcome(event.chat_id, user, cfg)
         except Exception:
-            log.exception("Group welcome handler failed chat_id=%s", getattr(event, "chat_id", None))
+            log.exception("Group welcome handler failed chat_id=%s", getattr(event, "chat_id", "unknown"))
 
     async def resolve_target(event, target):
         if event.is_group:
@@ -340,7 +335,7 @@ def setup(client):
         if not event.is_group:
             return await event.edit("Use this command inside a group.")
         if not await is_admin(event.chat_id):
-            return await event.edit("⛔ Admin-only.")
+            return await event.reply("⛔ <b>Admin-only.</b>", parse_mode="html")
         await event.edit(
             "⚠️ <b>Clear this group's saved member list?</b>\nThis cannot be undone.",
             buttons=[
@@ -375,22 +370,34 @@ def setup(client):
         enabled = cfg.get("enabled", True)
         buttons_count = len(cfg.get("buttons", []))
         text_value = cfg.get("text", "Welcome {first_name} to {group_name}! 💜")
-        await event.respond(
-            "💜 <b>ZYRA · GROUP WELCOME SETTINGS</b>\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            f"Status: <b>{'ON' if enabled else 'OFF'}</b>\n"
-            f"Custom URL buttons: <b>{buttons_count}</b>\n"
-            f"Welcome text: <code>{html.escape(text_value[:180])}</code>\n\n"
-            "Commands:\n"
-            f"• <code>{client.prefix}welcometext Your text with {{first_name}}</code>\n"
-            f"• Reply to a photo with <code>{client.prefix}welcomepicture</code>\n"
-            f"• <code>{client.prefix}welcomebutton Label | https://example.com</code>\n"
-            f"• <code>{client.prefix}welcomebuttonclear</code>\n"
-            "Variables: <code>{group_name}</code> <code>{first_name}</code> <code>{username}</code> <code>{user_id}</code>",
+        help_text = (
+            "🦋 <b>ZYRA · GROUP WELCOME CENTER</b> 🦋\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚙️ <b>Status:</b> {'🟢 ENABLED' if enabled else '🔴 DISABLED'}\n"
+            f"🖼 <b>Custom URL buttons:</b> {buttons_count}/4\n"
+            f"💬 <b>Current message:</b> <code>{html.escape(text_value[:160])}</code>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "<b>🛠️ COMMAND GUIDE</b>\n"
+            f"📝 <code>{client.prefix}welcometext Your message</code> — Set welcome text\n"
+            f"🖼 Reply to a photo with <code>{client.prefix}welcomepicture</code> — Set background\n"
+            f"🔗 <code>{client.prefix}welcomebutton Rules | https://example.com</code> — Add URL button\n"
+            f"🧹 <code>{client.prefix}welcomebuttonclear</code> — Remove all buttons\n"
+            "🧪 <code>/testwelcome</code> — Send a test welcome\n"
+            "⚙️ <code>/setwelcome</code> — Open this settings panel\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "<b>✨ SUPPORTED VARIABLES</b>\n"
+            "👤 <code>{first_name}</code> · 🏠 <code>{group_name}</code>\n"
+            "🔖 <code>{username}</code> · 🆔 <code>{user_id}</code>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "💡 <i>Tip: Use the buttons below to enable, preview or reset your welcome setup.</i>"
+        )
+        await event.reply(
+            help_text,
             buttons=[
                 [Button.inline("🟢 Enable" if not enabled else "🔴 Disable", data=f"zyrawelcome:toggle:{chat_id}".encode()),
-                 Button.inline("👁 Preview", data=f"zyrawelcome:preview:{chat_id}".encode())],
-                [Button.inline("🔄 Reset", data=f"zyrawelcome:reset:{chat_id}".encode())],
+                 Button.inline("👁️ Preview", data=f"zyrawelcome:preview:{chat_id}".encode())],
+                [Button.inline("🧪 Test Welcome", data=f"zyrawelcome:test:{chat_id}".encode()),
+                 Button.inline("🔄 Reset", data=f"zyrawelcome:reset:{chat_id}".encode())],
             ], parse_mode="html"
         )
 
@@ -398,55 +405,79 @@ def setup(client):
     async def setwelcome(event):
         target = int(event.pattern_match.group(1)) if event.pattern_match.group(1) else (event.chat_id if event.is_group else None)
         if target is None:
-            return await event.reply("Private chat se use karte waqt group ID do: <code>/setwelcome -1001234567890</code>", parse_mode="html")
+            return await event.reply("💬 <b>Usage:</b> <code>/setwelcome -1001234567890</code>\nSend this command in a group, or provide a group ID in private chat.", parse_mode="html")
         if not await is_admin(target):
-            return await event.reply("⛔ Target group mein connected account admin hona chahiye.")
+            return await event.reply("⛔ <b>Admin permission required.</b> Your connected account must be an admin in the target group.", parse_mode="html")
         await panel(event, target)
+
+    @client.on(events.NewMessage(pattern=r"^/testwelcome(?:@\w+)?(?:\s+(-?\d+))?$", outgoing=True))
+    async def testwelcome(event):
+        target = int(event.pattern_match.group(1)) if event.pattern_match.group(1) else (event.chat_id if event.is_group else None)
+        if target is None:
+            return await event.reply("💬 <b>Usage:</b> <code>/testwelcome -1001234567890</code>\nRun this in a group, or provide a group ID in private chat.", parse_mode="html")
+        if not await is_admin(target):
+            return await event.reply("⛔ <b>Admin permission required.</b> Connected account must be an admin in that group.", parse_mode="html")
+        cfg = await welcome.find_one({"uid": uid, "chat_id": int(target)}) or {}
+        if not cfg:
+            return await event.reply("⚠️ Welcome settings not found. Run <code>/setwelcome</code> first.", parse_mode="html")
+        me = await client.get_me()
+        try:
+            sent = await send_welcome(target, me, cfg)
+            if sent:
+                await event.reply("🧪 <b>Test welcome sent!</b>\n🖼 Image · 💬 Message · 🔗 Buttons checked using your saved settings.", parse_mode="html")
+            else:
+                await event.reply("🔴 <b>Welcome is disabled.</b> Enable it from <code>/setwelcome</code> and run the test again.", parse_mode="html")
+        except Exception as exc:
+            log.exception("Manual test welcome failed chat_id=%s", target)
+            await event.reply("❌ <b>Test welcome failed.</b> Check Render logs for the exact error.\n<code>%s</code>" % html.escape(str(exc)[:250]), parse_mode="html")
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"welcometext\s+([\s\S]+)$", outgoing=True))
     async def set_welcome_text(event):
         if not event.is_group:
-            return await event.edit("Group mein use karo.")
+            return await event.reply("💬 <b>Group mein use karo.</b>", parse_mode="html")
         if not await is_admin(event.chat_id):
-            return await event.edit("⛔ Admin-only.")
+            return await event.reply("⛔ <b>Admin-only.</b>", parse_mode="html")
         value = event.pattern_match.group(1).strip()
         if len(value) > 900:
-            return await event.edit("Welcome text maximum 900 characters.")
+            return await event.reply("⚠️ <b>Welcome text maximum 900 characters.</b>", parse_mode="html")
         await welcome.update_one({"uid": uid, "chat_id": int(event.chat_id)}, {"$set": {"text": value}}, upsert=True)
-        await event.edit("💜 Welcome text saved. Use <code>/setwelcome</code> to preview settings.")
+        await event.reply("💜 <b>Welcome text saved!</b> Use <code>/setwelcome</code> to open settings.", parse_mode="html")
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"welcomebutton\s+([^|]+)\|\s*(https?://\S+)$", outgoing=True))
     async def set_welcome_button(event):
         if not event.is_group:
-            return await event.edit("Group mein use karo.")
+            return await event.reply("💬 <b>Group mein use karo.</b>", parse_mode="html")
         if not await is_admin(event.chat_id):
-            return await event.edit("⛔ Admin-only.")
+            return await event.reply("⛔ <b>Admin-only.</b>", parse_mode="html")
         label = event.pattern_match.group(1).strip()[:40]
         url = event.pattern_match.group(2).strip()
+        cfg = await welcome.find_one({"uid": uid, "chat_id": int(event.chat_id)}) or {}
+        if len(cfg.get("buttons", [])) >= 4:
+            return await event.reply("⚠️ <b>Maximum 4 welcome buttons allowed.</b> Clear existing buttons to replace them.", parse_mode="html")
         await welcome.update_one(
             {"uid": uid, "chat_id": int(event.chat_id)},
             {"$push": {"buttons": {"label": label, "url": url}}},
             upsert=True,
         )
-        await event.edit("🔗 Welcome URL button added.")
+        await event.reply("🔗 <b>Welcome URL button added!</b>", parse_mode="html")
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"welcomebuttonclear$", outgoing=True))
     async def clear_welcome_buttons(event):
         if not event.is_group or not await is_admin(event.chat_id):
-            return await event.edit("⛔ Group admin-only.")
+            return await event.reply("⛔ <b>Group admin-only.</b>", parse_mode="html")
         await welcome.update_one({"uid": uid, "chat_id": int(event.chat_id)}, {"$set": {"buttons": []}}, upsert=True)
-        await event.edit("Welcome buttons cleared.")
+        await event.reply("🧹 <b>Welcome buttons cleared.</b>", parse_mode="html")
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"welcomepicture$", outgoing=True))
     async def set_welcome_picture(event):
         if not event.is_group or not await is_admin(event.chat_id):
-            return await event.edit("⛔ Group admin-only.")
+            return await event.reply("⛔ <b>Group admin-only.</b>", parse_mode="html")
         reply = await event.get_reply_message()
         if not reply or not reply.photo:
-            return await event.edit("Photo par reply karke <code>%swelcomepicture</code> bhejo." % client.prefix)
+            return await event.reply("🖼 <b>Photo par reply karke</b> <code>%swelcomepicture</code> bhejo." % client.prefix, parse_mode="html")
         raw = await client.download_media(reply, file=bytes)
         if not raw:
-            return await event.edit("Photo download nahi hui.")
+            return await event.reply("❌ <b>Photo download nahi hui.</b>", parse_mode="html")
         from PIL import Image
         im = Image.open(io.BytesIO(raw)).convert("RGB")
         im.thumbnail((1600, 900))
@@ -457,9 +488,9 @@ def setup(client):
             buf = io.BytesIO()
             im.save(buf, format="JPEG", quality=78, optimize=True)
         await welcome.update_one({"uid": uid, "chat_id": int(event.chat_id)}, {"$set": {"background": buf.getvalue()}}, upsert=True)
-        await event.edit("🖼 Welcome background saved. Member profile photo and name will be overlaid on it.")
+        await event.reply("🖼 <b>Welcome background saved!</b> Member profile photo and name will be overlaid on it.", parse_mode="html")
 
-    @client.on(events.CallbackQuery(pattern=rb"^zyrawelcome:(toggle|preview|reset):(-?\d+)$"))
+    @client.on(events.CallbackQuery(pattern=rb"^zyrawelcome:(toggle|preview|test|reset):(-?\d+)$"))
     async def welcome_panel_action(event):
         if event.sender_id != uid:
             return await event.answer("Only the connected account owner can change settings.", alert=True)
@@ -482,26 +513,15 @@ def setup(client):
             )
             await event.answer("Settings reset")
             await event.edit("🔄 Welcome settings reset to defaults. Welcome is ON.")
-        elif action == "preview":
+        elif action in ("preview", "test"):
             cfg = await welcome.find_one({"uid": uid, "chat_id": chat_id}) or {}
-            group = await client.get_entity(chat_id)
             me = await client.get_me()
-            avatar = None
-            try:
-                avatar = await client.download_profile_photo(me, file=bytes)
-            except Exception:
-                pass
-            image = _make_welcome_image(me.first_name or "New Member", getattr(group, "title", "Our Group"), avatar, cfg.get("background"))
-            try:
-                sample = (cfg.get("text") or "Welcome {first_name} to {group_name}! 💜").format(
-                    group_name=getattr(group, "title", "Our Group"), first_name=me.first_name or "Preview",
-                    username=("@" + me.username) if me.username else "", user_id=str(me.id)
-                )
-            except Exception:
-                sample = f"Welcome {me.first_name or 'Preview'} to {getattr(group, 'title', 'Our Group')}! 💜"
-            btns = [Button.url(x["label"], x["url"]) for x in cfg.get("buttons", [])[:4] if x.get("label") and x.get("url")]
-            if image:
-                await client.send_file(chat_id, image, caption=html.escape(sample), buttons=btns or None, parse_mode="html")
+            # Preview is allowed even when welcome is disabled; test follows the real enabled state.
+            if action == "preview":
+                preview_cfg = dict(cfg)
+                preview_cfg["enabled"] = True
+                await send_welcome(chat_id, me, preview_cfg)
+                await event.answer("👁️ Preview sent to group.")
             else:
-                await client.send_message(chat_id, html.escape(sample), buttons=btns or None, parse_mode="html")
-            await event.answer("Preview sent to group.")
+                sent = await send_welcome(chat_id, me, cfg)
+                await event.answer("🧪 Test welcome sent." if sent else "Welcome is disabled.", alert=not sent)
