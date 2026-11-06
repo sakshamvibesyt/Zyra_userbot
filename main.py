@@ -26,21 +26,17 @@ OWNER_ID = int(os.environ.get("OWNER_ID", "0") or 0)
 LOGGER_GROUP_ID = int(os.environ.get("LOGGER_GROUP_ID", "0") or 0)
 WELCOME_IMAGE = os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.png")
 WELCOME_ANIMATION = os.environ.get("WELCOME_ANIMATION", os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.mp4")).strip()
-WELCOME_VIDEO_DIR = os.path.join(os.path.dirname(__file__), "assets", "videos")
-WELCOME_VIDEO_BAG = []
+
+# Direct MP4 URLs used for the /start welcome video rotation.
+START_VIDEO_URLS = [
+    "https://www.image2url.com/r2/default/videos/1793904409822-271da135-72b3-4664-b931-9da3a3edde92.mp4",
+    "https://www.image2url.com/r2/default/videos/1793904536328-a3959414-4662-495a-aade-5eb8cdf7bf74.mp4",
+    "https://www.image2url.com/r2/default/videos/1793904593839-c821c4a8-6be4-4fb7-95c4-5596519c0d4e.mp4",
+    "https://www.image2url.com/r2/default/videos/1793904686803-50ec5d20-2ecc-4e04-be61-2a9645417052.mp4",
+    "https://www.image2url.com/r2/default/videos/1793904805127-9653e795-19be-418f-b7fa-4395b6f74295.mp4",
+]
+START_VIDEO_BAG = []
 START_ANIMATION_ENABLED = os.environ.get("START_ANIMATION_ENABLED", "false").lower() in ("1", "true", "yes")
-
-
-def available_welcome_videos():
-    """Return bundled MP4 files; local assets work without third-party hosting."""
-    try:
-        return sorted(
-            os.path.join(WELCOME_VIDEO_DIR, name)
-            for name in os.listdir(WELCOME_VIDEO_DIR)
-            if name.lower().endswith(".mp4") and os.path.isfile(os.path.join(WELCOME_VIDEO_DIR, name))
-        )
-    except OSError:
-        return []
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -49,14 +45,11 @@ log = logging.getLogger("main")
 bot = TelegramClient("master", API_ID, API_HASH)
 states = {}
 
-# Control-panel access is separate from the connected user accounts.
-# OWNER_ID must be set explicitly in Render environment variables.
 admins = db.db.zyra_panel_admins
 bot_start_users = db.db.zyra_bot_start_users
 
 
 async def send_logger_log(text):
-    """Send a formatted event to the configured logger group; logging must never break bot features."""
     if not LOGGER_GROUP_ID:
         return
     try:
@@ -98,7 +91,6 @@ async def start_web():
 
 
 def build_welcome_text(user_name="there"):
-    """Create a short personalized preview with Telegram's expandable details."""
     safe_name = html.escape((user_name or "there").strip())
     return (
         f"<b>✦ 𝐙𝐘𝐑𝐀 𝐔𝐒𝐄𝐑𝐁𝐎𝐓 ✦</b>\n"
@@ -235,7 +227,6 @@ def section_buttons():
 
 
 async def load_start_sticker_cache():
-    """Load the saved sticker message once at startup instead of querying Mongo on every /start."""
     global START_STICKER_MESSAGE
     try:
         saved = await db.settings.find_one({"_id": "start_sticker"})
@@ -248,18 +239,17 @@ async def load_start_sticker_cache():
 
 
 def pick_welcome_video():
-    """Choose a bundled welcome MP4 without repeating until the cycle is used."""
-    global WELCOME_VIDEO_BAG
-    available = available_welcome_videos()
-    WELCOME_VIDEO_BAG = [path for path in WELCOME_VIDEO_BAG if path in available]
-    if not WELCOME_VIDEO_BAG:
-        WELCOME_VIDEO_BAG = available[:]
-        random.shuffle(WELCOME_VIDEO_BAG)
-    return WELCOME_VIDEO_BAG.pop() if WELCOME_VIDEO_BAG else None
+    """Choose a remote MP4 without repeating until the current URL cycle is used."""
+    global START_VIDEO_BAG
+    available = list(START_VIDEO_URLS)
+    START_VIDEO_BAG = [url for url in START_VIDEO_BAG if url in available]
+    if not START_VIDEO_BAG:
+        START_VIDEO_BAG = available[:]
+        random.shuffle(START_VIDEO_BAG)
+    return START_VIDEO_BAG.pop() if START_VIDEO_BAG else None
 
 
 async def run_start_animation(chat_id):
-    """Play a paced, multi-frame ZYRA engine boot animation in one message."""
     header = "╭━━━『 ZYRA ENGINE 』━━━╮"
     footer = "╰━━━━━━━━━━━━━━━━━━━━╯"
     base = (
@@ -283,8 +273,6 @@ async def run_start_animation(chat_id):
         f"{base}\n\n  [████████████████] 100%\n\n  ✓ ENGINE INITIALIZED\n  ✓ ALL SYSTEMS ONLINE\n\n{footer}",
     ]
 
-    # The first frame follows the /start reaction. Every later frame edits
-    # this same message so the full boot sequence is visible, not skipped.
     status = await bot.send_message(chat_id, frames[0], parse_mode=None, link_preview=False)
     for frame in frames[1:]:
         await asyncio.sleep(0.9)
@@ -294,7 +282,6 @@ async def run_start_animation(chat_id):
             log.warning("Start animation edit failed: %s", ex)
             break
 
-    # Keep the completed screen briefly, then delete it before sticker/video.
     await asyncio.sleep(1.1)
     try:
         await status.delete()
@@ -312,11 +299,9 @@ async def send_start_menu(chat_id, reply_to=None, user_name=None):
             user_name = "there"
     welcome_text = build_welcome_text(user_name)
 
-    # Optional boot animation. Disabled by default to keep /start fast.
     if START_ANIMATION_ENABLED:
         await run_start_animation(chat_id)
 
-    # Then send the already-saved sticker, followed immediately by the welcome video.
     try:
         if START_STICKER_MESSAGE is not None:
             await bot.send_file(chat_id, START_STICKER_MESSAGE, reply_to=reply_to)
@@ -325,17 +310,17 @@ async def send_start_menu(chat_id, reply_to=None, user_name=None):
     except Exception as ex:
         log.warning("Start sticker could not be sent: %s", ex)
 
-    video_path = pick_welcome_video()
-    if video_path:
+    video_url = pick_welcome_video()
+    if video_url:
         try:
             await bot.send_file(
-                chat_id, video_path, caption=welcome_text,
+                chat_id, video_url, caption=welcome_text,
                 buttons=start_buttons(), parse_mode="html", reply_to=reply_to,
                 supports_streaming=True,
             )
             return
         except Exception as ex:
-            log.warning("Bundled welcome video send failed; using fallback media: %s", ex)
+            log.warning("Remote welcome video send failed; using fallback media: %s", ex)
 
     media_path = WELCOME_ANIMATION if WELCOME_ANIMATION and os.path.isfile(WELCOME_ANIMATION) else WELCOME_IMAGE
     try:
@@ -349,10 +334,8 @@ async def send_start_menu(chat_id, reply_to=None, user_name=None):
 
 @bot.on(events.NewMessage(pattern=r"^/start(?:@\w+)?(?:\s+.*)?$"))
 async def cmd_start(e):
-    """React immediately, then send the welcome sequence; analytics run in background."""
     log.info("/start received user_id=%s", e.sender_id)
 
-    # The reaction is the first awaited network action, so analytics cannot delay it.
     try:
         await bot(functions.messages.SendReactionRequest(
             peer=e.peer_id,
@@ -369,7 +352,6 @@ async def cmd_start(e):
 
 
 async def record_start_user(user_id, first_name, username):
-    """Record first-time bot users without blocking the visible /start response."""
     try:
         start_record = await bot_start_users.find_one({"_id": int(user_id)})
         if start_record:
@@ -394,7 +376,6 @@ async def record_start_user(user_id, first_name, username):
         log.warning("Could not record /start event: %s", ex)
 
 def is_welcome_media_message(event):
-    """Match media sent privately by the configured owner for welcome-sticker saving."""
     return bool(
         OWNER_ID
         and event.is_private
@@ -409,8 +390,6 @@ async def sticker_id_helper(e):
     global START_STICKER_MESSAGE
     if not await require_panel_access(e):
         return
-    # Save the source message reference in MongoDB; Telethon uses MTProto media,
-    # not Bot API file_id strings from third-party ID bots.
     try:
         START_STICKER_MESSAGE = e
         await db.settings.update_one(
@@ -464,7 +443,6 @@ async def cb_back_start(e):
 
 
 async def start_login(uid, event):
-    """Start the phone-number login flow for the user who pressed Add Account."""
     if not event.is_private:
         await event.respond("🔒 Account login sirf bot ke private chat mein karein.")
         return
@@ -517,299 +495,4 @@ async def cb_login(e):
     await start_login(e.sender_id, e)
 
 
-
-
-@bot.on(events.NewMessage(pattern=r"^/login$"))
-async def cmd_login(e):
-    await start_login(e.sender_id, e)
-
-
-@bot.on(events.NewMessage(pattern=r"^/panel$"))
-async def cmd_panel(e):
-    if not await require_panel_access(e):
-        return
-    if not e.is_private:
-        return await e.reply("🔒 /panel ko bot ke private chat mein use karein.")
-    await send_start_menu(e.chat_id)
-
-
-@bot.on(events.NewMessage(pattern=r"^/help$"))
-async def cmd_help(e):
-    await bot.send_message(e.chat_id, HELP_TEXT, parse_mode="html", buttons=help_buttons())
-
-
-@bot.on(events.NewMessage(pattern=r"^/logout$"))
-async def cmd_logout(e):
-    # Self-service only: users can disconnect their own saved account, never another user's.
-    uid = e.sender_id
-    await manager.kill(uid)
-    await db.users.delete_one({"_id": uid})
-    states.pop(uid, None)
-    await e.reply("Logged out, session delete ho gaya.")
-
-
-@bot.on(events.NewMessage(pattern=r"^/status$"))
-async def cmd_status(e):
-    if not await require_panel_access(e):
-        return
-    uid = e.sender_id
-    doc = await db.users.find_one({"_id": uid})
-    if not doc:
-        return await e.reply("Koi account nahi. /login")
-    live = uid in manager.clients
-    await e.reply(
-        "Account: <code>%s</code>\nPrefix: <code>%s</code>\nState: %s\nDisabled: %s"
-        % (
-            doc.get("name", "?"),
-            doc.get("prefix", "."),
-            "online" if live else "offline",
-            ", ".join(doc.get("disabled", [])) or "none",
-        )
-    )
-
-
-@bot.on(events.NewMessage(pattern=r"^/prefix(?:\s+(\S+))?$"))
-async def cmd_prefix(e):
-    if not await require_panel_access(e):
-        return
-    uid = e.sender_id
-    new = e.pattern_match.group(1)
-    if not new:
-        return await e.reply("Usage: <code>/prefix .</code>")
-    await db.users.update_one({"_id": uid}, {"$set": {"prefix": new}})
-    c = manager.clients.get(uid)
-    if c:
-        c.prefix = new
-    await e.reply("Prefix saved: <code>%s</code>\nExisting connected sessions may need reconnect/restart for every plugin handler to use the new prefix." % new)
-
-
-@bot.on(events.NewMessage(pattern=r"^/plugins$"))
-async def cmd_plugins(e):
-    if not await require_panel_access(e):
-        return
-    import pkgutil, plugins as pkg
-    uid = e.sender_id
-    doc = await db.users.find_one({"_id": uid})
-    if not doc:
-        return await e.reply("Pehle /login karo.")
-    disabled = set(doc.get("disabled", []))
-    btns = []
-    for m in pkgutil.iter_modules(pkg.__path__):
-        label = ("OFF" if m.name in disabled else "ON") + " · " + m.name
-        btns.append([Button.inline(label, ("tg:" + m.name).encode())])
-    await e.reply("Plugin toggle (restart ke baad apply hoga):", buttons=btns)
-
-
-@bot.on(events.CallbackQuery(pattern=rb"^tg:(.+)$"))
-async def cb_toggle(e):
-    if not await is_panel_admin(e.sender_id):
-        return await e.answer("Owner/admin access required", alert=True)
-    name = e.pattern_match.group(1).decode()
-    uid = e.sender_id
-    doc = await db.users.find_one({"_id": uid})
-    if not doc:
-        return await e.answer("Login karo", alert=True)
-    disabled = set(doc.get("disabled", []))
-    disabled.symmetric_difference_update({name})
-    await db.users.update_one({"_id": uid}, {"$set": {"disabled": list(disabled)}})
-    # Apply plugin changes immediately to this user's running client.
-    await manager.kill(uid)
-    fresh = await db.users.find_one({"_id": uid})
-    if fresh and fresh.get("enabled", True) and not fresh.get("dead", False):
-        await manager.spawn(fresh)
-    await e.answer(name + ": " + ("OFF" if name in disabled else "ON"))
-
-
-@bot.on(events.NewMessage(pattern=r"^/myid$"))
-async def cmd_myid(e):
-    await e.reply("Your Telegram user ID: <code>%s</code>" % e.sender_id, parse_mode="html")
-
-
-@bot.on(events.NewMessage(pattern=r"^/addadmin\s+(\d+)$"))
-async def cmd_addadmin(e):
-    if not await is_owner(e.sender_id):
-        return await e.reply("🔒 Sirf configured owner admin add kar sakta hai.")
-    target = int(e.pattern_match.group(1))
-    if OWNER_ID and target == OWNER_ID:
-        return await e.reply("Owner already has full access.")
-    await admins.update_one({"_id": target}, {"$set": {"added_by": e.sender_id, "created_at": int(time.time())}}, upsert=True)
-    log.info("panel admin added by owner_id=%s target_id=%s", e.sender_id, target)
-    await e.reply("✅ Trusted admin add ho gaya: <code>%s</code>\nAb woh panel commands aur apne connected account ke tools use kar sakta hai." % target, parse_mode="html")
-
-
-@bot.on(events.NewMessage(pattern=r"^/removeadmin\s+(\d+)$"))
-async def cmd_removeadmin(e):
-    if not await is_owner(e.sender_id):
-        return await e.reply("🔒 Sirf configured owner admin remove kar sakta hai.")
-    target = int(e.pattern_match.group(1))
-    result = await admins.delete_one({"_id": target})
-    log.info("panel admin removed by owner_id=%s target_id=%s", e.sender_id, target)
-    await e.reply("✅ Admin remove kar diya." if result.deleted_count else "Ye ID admin list mein nahi thi.")
-
-
-@bot.on(events.NewMessage(pattern=r"^/admins$"))
-async def cmd_list_admins(e):
-    if not await require_panel_access(e):
-        return
-    rows = await admins.find({}).to_list(length=100)
-    lines = ["• <code>%s</code>" % row["_id"] for row in rows]
-    if OWNER_ID:
-        lines.insert(0, "• <code>%s</code> — OWNER" % OWNER_ID)
-    await e.reply("<b>✦ ZYRA TRUSTED ADMINS</b>\n\n" + ("\n".join(lines) if lines else "No extra admins added."), parse_mode="html")
-
-
-@bot.on(events.NewMessage())
-async def router(e):
-    uid = e.sender_id
-    # Each user may complete only their own pending login state. Admin status is
-    # not required for OTP/2FA; management commands remain separately protected.
-    st = states.get(uid)
-    if not st or not e.raw_text or e.raw_text.startswith("/"):
-        return
-
-    text = e.raw_text.strip()
-
-    if st["step"] == "phone":
-        client = TelegramClient(StringSession(), API_ID, API_HASH)
-        await client.connect()
-        try:
-            sent = await client.send_code_request(text)
-        except PhoneNumberInvalidError:
-            await client.disconnect()
-            return await e.reply("Invalid number. Dobara bhejo.")
-        except FloodWaitError as ex:
-            await client.disconnect()
-            return await e.reply("FloodWait %ss. Baad me try karo." % ex.seconds)
-        except Exception as ex:
-            await client.disconnect()
-            return await e.reply("<code>%s</code>" % ex)
-
-        st.update(step="code", phone=text, client=client, hash=sent.phone_code_hash)
-        await e.reply("OTP bhejo. Format: <code>1 2 3 4 5</code> ya <code>12345</code>")
-
-    elif st["step"] == "code":
-        client = st["client"]
-        code = text.replace(" ", "")
-        try:
-            await client.sign_in(st["phone"], code, phone_code_hash=st["hash"])
-        except SessionPasswordNeededError:
-            st["step"] = "2fa"
-            return await e.reply("2FA password bhejo.")
-        except (PhoneCodeInvalidError, PhoneCodeExpiredError) as ex:
-            return await e.reply(type(ex).__name__ + " — dobara /login karo")
-        except Exception as ex:
-            return await e.reply("<code>%s</code>" % ex)
-        await finish_login(uid, e, client, st["phone"])
-
-    elif st["step"] == "2fa":
-        client = st["client"]
-        try:
-            await client.sign_in(password=text)
-        except PasswordHashInvalidError:
-            return await e.reply("Password galat. Dobara bhejo.")
-        await finish_login(uid, e, client, st["phone"])
-
-
-async def finish_login(uid, e, client, phone):
-    try:
-        await e.reply("Saving...")
-        me = await client.get_me()
-        session = client.session.save()
-        previous_user = await db.users.find_one({"_id": uid})
-        await db.users.update_one(
-            {"_id": uid},
-            {"$set": {
-                "phone": phone,
-                "name": me.first_name or str(me.id),
-                "session": crypto.enc(session),
-                "prefix": ".",
-                "enabled": True,
-                "dead": False,
-                "disabled": [],
-            }},
-            upsert=True,
-        )
-        await client.disconnect()
-        doc = await db.users.find_one({"_id": uid})
-        await manager.spawn(doc)
-        states.pop(uid, None)
-        if not previous_user:
-            login_total = await db.users.count_documents({})
-            await send_logger_log(
-                "🔐 <b>NEW ACCOUNT LOGIN</b>\n"
-                "━━━━━━━━━━━━━━━━━━\n"
-                f"👤 Account: <b>{html.escape(me.first_name or str(me.id))}</b>\n"
-                f"🆔 Telegram ID: <code>{me.id}</code>\n"
-                f"🧩 Added by user ID: <code>{uid}</code>\n"
-                f"📊 Connected accounts: <b>{login_total}</b>\n"
-                "✅ <i>Account saved and session started.</i>"
-            )
-        else:
-            await send_logger_log(
-                "♻️ <b>ACCOUNT SESSION REFRESHED</b>\n"
-                f"👤 Account: <b>{html.escape(me.first_name or str(me.id))}</b>\n"
-                f"🆔 Telegram ID: <code>{me.id}</code>\n"
-                "✅ <i>Session refreshed successfully.</i>"
-            )
-        await e.reply(
-            "✅ Login ho gaya: <b>%s</b>. Prefix <code>.</code> — <code>.ping</code> try karo."
-            % me.first_name
-        )
-    except Exception as ex:
-        log.exception("finish_login")
-        await e.reply("<code>%s</code>" % ex)
-
-
-async def main():
-    await start_web()
-    await bot.start(bot_token=BOT_TOKEN)
-    global ADD_TO_GROUP_URL
-    try:
-        bot_profile = await bot.get_me()
-        if bot_profile and bot_profile.username and not os.environ.get("ADD_TO_GROUP_URL"):
-            ADD_TO_GROUP_URL = f"https://t.me/{bot_profile.username}?startgroup=true"
-    except Exception as ex:
-        log.warning("Could not resolve bot username for Add to Group URL: %s", ex)
-    await load_start_sticker_cache()
-    await manager.boot_all()
-    # Deployment summary plus one profile-status card per saved account.
-    try:
-        total_accounts = await db.users.count_documents({})
-        online_accounts = len(manager.clients)
-        total_bot_users = await bot_start_users.count_documents({})
-        await send_logger_log(
-            "🚀 <b>ZYRA USERBOT · DEPLOY ONLINE</b>\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            "💜 Status: <b>ONLINE</b>\n"
-            f"👥 Saved accounts: <b>{total_accounts}</b>\n"
-            f"🟢 Active clients: <b>{online_accounts}</b>\n"
-            f"📨 Bot users recorded: <b>{total_bot_users}</b>\n"
-            "⚡ <i>All saved profiles are being checked below.</i>"
-        )
-        async for account in db.users.find({}):
-            uid = account.get("_id")
-            is_online = uid in manager.clients
-            status = "🟢 ONLINE" if is_online else "🟠 SAVED · NOT ACTIVE"
-            await send_logger_log(
-                "👤 <b>PROFILE LOADED</b>\n"
-                f"✦ Name: <b>{display_name(account)}</b>\n"
-                f"🆔 User ID: <code>{uid}</code>\n"
-                f"📡 Status: <b>{status}</b>\n"
-                "━━━━━━━━━━━━━━━━━━"
-            )
-    except Exception as ex:
-        log.warning("Could not send deploy summary to logger group: %s", ex)
-    monitor_task = asyncio.create_task(manager.monitor_connections(), name="client-reconnect-monitor")
-    log.info("ready")
-    try:
-        await bot.run_until_disconnected()
-    finally:
-        monitor_task.cancel()
-        try:
-            await monitor_task
-        except asyncio.CancelledError:
-            pass
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+@bot.on(events.NewMessage(pattern=r"^
