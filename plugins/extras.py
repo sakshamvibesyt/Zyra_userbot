@@ -51,6 +51,7 @@ def setup(client):
     filters = database.db.zyra_filters
     afk_settings = database.db.zyra_afk_settings
     afk_states = database.db.zyra_afk_states
+    smart_tag_cooldowns = {}
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"help$", outgoing=True))
     async def help_cmd(e):
@@ -77,12 +78,8 @@ def setup(client):
             f"<code>{prefix}emojify text</code> · add random emojis\n"
             f"<code>{prefix}spoiler text</code> · spoiler formatting\n"
             f"<code>{prefix}type text</code> · typewriter effect\n"
-            f"<code>{prefix}tagjoin [group_id]</code> · import available group members (admin)\n"
-            f"<code>{prefix}tagcount</code> / <code>{prefix}taglist</code> · saved member list\n"
-            f"<code>{prefix}tagclear</code> · clear saved list with confirmation\n"
-            f"<code>{prefix}tagall [message]</code> · admin-only, up to 150 recent members\n"
+            f"<code>{prefix}tagall [message]</code> · quote-style mentions for up to 150 recently active members\n"
             f"<code>{prefix}tagcancel</code> · stop the active TagAll process\n"
-            "<code>/setwelcome</code> · group welcome settings panel\n"
             f"<code>{prefix}addraid msg1 | msg2</code> · save message rotation\n"
             f"<code>{prefix}raid 5</code> · send up to 10 saved messages\n"
             f"<code>{prefix}clearraid</code> · clear saved messages\n\n"
@@ -104,7 +101,10 @@ def setup(client):
             f"<code>{prefix}replies</code> · list auto-replies\n"
             f"<code>{prefix}filter word | reply</code> · add current-chat filter\n"
             f"<code>{prefix}stop word</code> · remove filter\n"
-            f"<code>{prefix}filters</code> · list current-chat filters\n\n"
+            f"<code>{prefix}filters</code> · list current-chat filters\n"
+            f"<code>{prefix}tagadd word | reply</code> · create a Smart Tag\n"
+            f"<code>{prefix}tagdel word</code> · remove a Smart Tag\n"
+            f"<code>{prefix}tags</code> · list Smart Tags in this chat\n\n"
             "<b>⚒ GROUP ADMIN</b>\n"
             f"<code>{prefix}adminhelp</code> · admin-only command guide\n\n"
             "<b>✦ AI</b>\n"
@@ -440,13 +440,26 @@ def setup(client):
                 await e.reply(doc["response"])
             except Exception:
                 pass
-        # Per-chat filters respond when a trigger appears in a message.
+        # Per-chat filters / Smart Tags respond to a matching keyword.
         async for f in filters.find({"uid": uid, "chat_id": e.chat_id}):
-            if f["trigger"].casefold() in text.casefold():
+            if f.get("trigger") and f["trigger"].casefold() in text.casefold():
+                cooldown_key = (int(e.chat_id), f["trigger"])
+                now = time.monotonic()
+                if now - smart_tag_cooldowns.get(cooldown_key, 0) < 15:
+                    break
+                smart_tag_cooldowns[cooldown_key] = now
                 try:
-                    await e.reply(f["response"])
+                    if f.get("media_chat_id") and f.get("media_message_id"):
+                        media_msg = await client.get_messages(f["media_chat_id"], ids=f["media_message_id"])
+                        if media_msg and media_msg.media:
+                            await client.send_file(e.chat_id, media_msg.media, caption=f.get("response") or None)
+                        elif f.get("response"):
+                            await e.reply(f["response"])
+                    elif f.get("response"):
+                        await e.reply(f["response"])
                 except Exception:
                     pass
+                break
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"note\s+([^|]+?)\s*\|\s*(.+)$", outgoing=True))
     async def save_note(e):
@@ -499,6 +512,46 @@ def setup(client):
         trigger = e.pattern_match.group(1).strip().casefold()
         res = await filters.delete_one({"uid": uid, "chat_id": e.chat_id, "trigger": trigger})
         await e.edit("Filter removed." if res.deleted_count else "Filter not found.")
+
+    # Lisa-style Smart Tags: keyword-to-reply rules scoped to the current chat.
+    # Existing filter rules remain compatible and continue to work.
+    @client.on(events.NewMessage(pattern=r"^" + p + r"tagadd\s+([^|]+?)(?:\s*\|\s*(.+))?$", outgoing=True))
+    async def smart_tag_add(e):
+        trigger = e.pattern_match.group(1).strip()
+        response = (e.pattern_match.group(2) or "").strip()
+        media_chat_id = media_message_id = None
+        if not response and e.is_reply:
+            replied = await e.get_reply_message()
+            if replied and replied.media:
+                media_chat_id, media_message_id = int(e.chat_id), int(replied.id)
+        if not trigger or len(trigger) > 64 or len(response) > 1500:
+            return await e.edit("Tag limit: keyword 1–64 chars, reply up to 1500 chars.")
+        if not response and not media_message_id:
+            return await e.edit("Use <code>%stagadd keyword | reply</code> or reply to media with <code>%stagadd keyword</code>." % client.prefix)
+        await filters.update_one(
+            {"uid": uid, "chat_id": e.chat_id, "trigger": trigger.casefold()},
+            {"$set": {
+                "trigger": trigger.casefold(), "response": response, "kind": "smart_tag",
+                "media_chat_id": media_chat_id, "media_message_id": media_message_id,
+            }},
+            upsert=True,
+        )
+        kind = "media" if media_message_id else "text"
+        await e.edit("🖤 <b>Smart Tag saved</b>\nKeyword: <code>%s</code>\nReply type: <b>%s</b> · active in this chat." % (html.escape(trigger), kind))
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"tagdel\s+(.+)$", outgoing=True))
+    async def smart_tag_delete(e):
+        trigger = e.pattern_match.group(1).strip().casefold()
+        res = await filters.delete_one({"uid": uid, "chat_id": e.chat_id, "trigger": trigger})
+        await e.edit("🗑 Smart Tag removed." if res.deleted_count else "Smart Tag not found.")
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"tags$", outgoing=True))
+    async def smart_tag_list(e):
+        items = await filters.find({"uid": uid, "chat_id": e.chat_id}).to_list(length=50)
+        if not items:
+            return await e.edit("🖤 No Smart Tags in this chat.\\nUse <code>%stagadd hello | Hey!</code>" % client.prefix)
+        rows = [f"• <code>{html.escape(item.get('trigger', ''))}</code>" for item in items]
+        await e.edit("🖤 <b>ZYRA SMART TAGS</b>\\n" + "\\n".join(rows))
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"filters$", outgoing=True))
     async def list_filters(e):

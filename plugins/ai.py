@@ -1,3 +1,4 @@
+import re
 import os
 import aiohttp
 from telethon import events
@@ -19,10 +20,17 @@ async def ask(prompt):
         ],
     }
     h = {"Authorization": "Bearer " + KEY, "Content-Type": "application/json"}
-    async with aiohttp.ClientSession() as s:
-        async with s.post(BASE + "/chat/completions", json=payload, headers=h, timeout=60) as r:
-            d = await r.json()
-    return d["choices"][0]["message"]["content"].strip()
+    timeout = aiohttp.ClientTimeout(total=35, connect=10)
+    async with aiohttp.ClientSession(timeout=timeout) as s:
+        async with s.post(BASE.rstrip("/") + "/chat/completions", json=payload, headers=h) as r:
+            if r.status >= 400:
+                detail = (await r.text())[:300]
+                raise RuntimeError(f"AI service returned HTTP {r.status}: {detail}")
+            d = await r.json(content_type=None)
+    choices = d.get("choices") or []
+    if not choices:
+        raise RuntimeError("AI service returned an empty response.")
+    return (choices[0].get("message", {}).get("content") or "").strip() or "AI ne empty reply diya."
 
 
 def setup(client):
@@ -30,10 +38,14 @@ def setup(client):
         return
     p = client.prefix
 
-    @client.on(events.NewMessage(pattern=r"^" + p + r"ai (.+)", outgoing=True))
+    @client.on(events.NewMessage(pattern=r"^" + re.escape(p) + r"ai\s+([\s\S]+)$", outgoing=True))
     async def cmd(e):
-        m = await e.reply("...")
+        prompt = e.pattern_match.group(1).strip()
+        if len(prompt) > 3000:
+            return await e.edit("Prompt 3000 characters se chhota rakho.")
+        m = await e.reply("🖤 <b>ZYRA AI is thinking…</b>", parse_mode="html")
         try:
-            await m.edit(await ask(e.pattern_match.group(1)))
+            answer = await ask(prompt)
+            await m.edit(answer[:3900])
         except Exception as ex:
-            await m.edit("<code>%s</code>" % ex)
+            await m.edit("⚠️ <b>AI request failed.</b>\\n<code>%s</code>" % __import__("html").escape(str(ex)[:250]), parse_mode="html")
