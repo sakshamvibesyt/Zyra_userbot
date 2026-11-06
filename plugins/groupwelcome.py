@@ -143,61 +143,48 @@ def setup(client):
 
     @client.on(events.ChatAction)
     async def archive_joined_member(event):
-        """Archive and welcome every user involved in a join/add action.
-
-        Telethon may return a list from get_users()/get_user() when several
-        members are added in one service message. Handle both single users and
-        lists so one multi-add event cannot break the welcome handler.
-        """
+        """Archive and welcome actual joiners, not the user who performed the add."""
         try:
-            if not (event.user_joined or event.user_added):
-                return
+            action_message = getattr(event, "action_message", None)
+            action = getattr(action_message, "action", None)
+            action_name = type(action).__name__ if action is not None else ""
 
-            # get_users() is the most reliable way to retrieve all users from
-            # MessageActionChatAddUser. Fall back to get_user() for older
-            # Telethon versions / self-join events.
-            joined_users = []
-            try:
-                result = await event.get_users()
-            except (AttributeError, TypeError):
-                result = await event.get_user()
-            except Exception:
-                result = await event.get_user()
+            # ChatAction.user_joined/user_added are about the connected account,
+            # not every member in the group. Inspect the service-message action
+            # so joins by link and members added by another admin are detected.
+            joined_ids = []
+            if action_name == "MessageActionChatAddUser":
+                joined_ids = list(getattr(action, "users", []) or [])
+            elif action_name in (
+                "MessageActionChatJoinedByLink",
+                "MessageActionChatJoinedByRequest",
+            ):
+                # For link/request joins, the service message sender is the new member.
+                sender_id = getattr(action_message, "sender_id", None)
+                if sender_id:
+                    joined_ids = [sender_id]
 
-            if result:
-                joined_users = result if isinstance(result, (list, tuple)) else [result]
-
-            # Some Telethon versions return no users from get_users() for a
-            # self-join service message; get_user() can still resolve it.
-            if not joined_users:
-                result = await event.get_user()
-                if result:
-                    joined_users = result if isinstance(result, (list, tuple)) else [result]
-
-            if not joined_users:
-                log.warning("Join action had no resolvable users chat_id=%s", event.chat_id)
+            if not joined_ids:
                 return
 
             cfg = await welcome.find_one({"uid": uid, "chat_id": int(event.chat_id)})
             if not cfg or not cfg.get("enabled", True):
-                # Still archive the members even when welcome is disabled.
-                for joined_user in joined_users:
-                    await save_member(event.chat_id, joined_user)
                 return
 
             group = await event.get_chat()
             group_name = getattr(group, "title", None) or "Our Group"
-            template = cfg.get("text", "Welcome {first_name} to {group_name}! 💜")
             buttons = []
             for item in cfg.get("buttons", [])[:4]:
                 label, url = item.get("label"), item.get("url")
                 if label and url and re.match(r"^https?://", url, re.I):
                     buttons.append(Button.url(label[:40], url))
 
-            for user in joined_users:
-                if not user or getattr(user, "bot", False) or getattr(user, "deleted", False):
-                    continue
+            template = cfg.get("text", "Welcome {first_name} to {group_name}! 💜")
+            for joined_id in dict.fromkeys(joined_ids):
                 try:
+                    user = await client.get_entity(joined_id)
+                    if not user:
+                        continue
                     await save_member(event.chat_id, user)
                     first_name = getattr(user, "first_name", None) or "New Member"
                     username = getattr(user, "username", None) or ""
@@ -217,9 +204,9 @@ def setup(client):
                     try:
                         caption = template.format(**values)
                     except Exception:
+                        log.exception("Invalid welcome template; using fallback")
                         caption = f"Welcome {first_name} to {group_name}! 💜"
                     caption = html.escape(caption)
-
                     if image:
                         await client.send_file(
                             event.chat_id, image, caption=caption,
@@ -232,11 +219,11 @@ def setup(client):
                         )
                 except Exception:
                     log.exception(
-                        "Could not process joined user=%s chat_id=%s",
-                        getattr(user, "id", "unknown"), event.chat_id
+                        "Could not welcome joined member %s in chat_id=%s",
+                        joined_id, event.chat_id
                     )
         except Exception:
-            log.exception("Group welcome handler failed chat_id=%s", getattr(event, "chat_id", "unknown"))
+            log.exception("Group welcome handler failed chat_id=%s", getattr(event, "chat_id", None))
 
     async def resolve_target(event, target):
         if event.is_group:
