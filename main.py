@@ -38,7 +38,6 @@ START_VIDEO_URLS = [
 START_VIDEO_BAG = []
 START_ANIMATION_ENABLED = os.environ.get("START_ANIMATION_ENABLED", "false").lower() in ("1", "true", "yes")
 
-
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("main")
 
@@ -61,13 +60,16 @@ async def send_logger_log(text):
 def display_name(doc):
     return html.escape(str(doc.get("name") or doc.get("first_name") or doc.get("_id") or "Unknown"))
 
+
 async def is_owner(uid):
     return bool(OWNER_ID and uid == OWNER_ID)
+
 
 async def is_panel_admin(uid):
     if await is_owner(uid):
         return True
     return bool(await admins.find_one({"_id": int(uid)}))
+
 
 async def require_panel_access(event):
     if not await is_panel_admin(event.sender_id):
@@ -331,7 +333,6 @@ async def send_start_menu(chat_id, reply_to=None, user_name=None):
         await bot.send_message(chat_id, welcome_text, buttons=start_buttons(), parse_mode="html", reply_to=reply_to)
 
 
-
 @bot.on(events.NewMessage(pattern=r"^/start(?:@\w+)?(?:\s+.*)?$"))
 async def cmd_start(e):
     log.info("/start received user_id=%s", e.sender_id)
@@ -374,6 +375,7 @@ async def record_start_user(user_id, first_name, username):
         )
     except Exception as ex:
         log.warning("Could not record /start event: %s", ex)
+
 
 def is_welcome_media_message(event):
     return bool(
@@ -495,4 +497,4 @@ async def cb_login(e):
     await start_login(e.sender_id, e)
 
 
-@bot.on(events.NewMessage(pattern=r"^
+@bot.on(events.NewMessage(pattern=r
