@@ -93,7 +93,7 @@ def setup(client):
                 f"<code>{prefix}reclone</code> or <code>{prefix}revert</code> — apni saved profile wapas lagao\n\n"
                 "<i>Clone sirf permission lekar karo. Telegram kuch profile details ya photos access nahi karne deta.</i>"
                 "</blockquote>\n"
-                "<i>Use the buttons below to move through the guide.</i>"
+                "<i>For working Previous / Next buttons, open the Zyra bot chat and send <code>/help</code>. Telegram only allows bot accounts to send callback buttons; this user-account help keeps numbered pages as a fallback.</i>"
             ),
             (
                 "<b>✧ TEXT &amp; COMMUNITY TOOLS</b>\n"
@@ -108,7 +108,7 @@ def setup(client):
                 f"<code>{prefix}type hello</code> — typewriter effect se bhejo\n\n"
                 "<b>👥 SMART TAGS (GROUP)</b>\n"
                 f"<code>{prefix}tagrefresh</code> — group ke available members scan/save karo\n"
-                f"<code>{prefix}tagall [message]</code> — saved members ko mention karo (admin only)\n"
+                f"<code>{prefix}tagall [message]</code> — one member per quote-style message (admin only, max 20/run)\n"
                 f"<code>{prefix}taglist</code> — saved aur opt-out members ka count dekho\n"
                 f"<code>{prefix}tagjoin</code> / <code>{prefix}tagleave</code> — tagging allow/stop karo\n"
                 f"<code>{prefix}tagstop</code> — chal raha tag process roko\n"
@@ -277,8 +277,10 @@ def setup(client):
     tagall_running = {}
     tagall_runs = database.db.zyra_tagall_runs
     TAGALL_MEMBER_LIMIT = _env_int("TAGALL_MAX_MEMBERS", 5000, 50, 10000)
-    TAGALL_BATCH_SIZE = _env_int("TAGALL_BATCH_SIZE", 8, 3, 10)
-    TAGALL_DELAY_SECONDS = _env_float("TAGALL_DELAY_SECONDS", 3.0, 2.0, 30.0)
+    # Each run mentions at most 20 opted-in members, one message per member.
+    # The cooldown and delay are intentional safeguards against mention spam.
+    TAGALL_MAX_MENTIONS = _env_int("TAGALL_MAX_MENTIONS", 20, 1, 20)
+    TAGALL_DELAY_SECONDS = _env_float("TAGALL_DELAY_SECONDS", 4.0, 4.0, 30.0)
     TAGALL_COOLDOWN_SECONDS = _env_int("TAGALL_COOLDOWN", 3600, 1800, 604800)
 
     async def save_tag_member(chat_id, sender):
@@ -421,63 +423,65 @@ def setup(client):
                 scanned, saved, skipped = await refresh_group_members(e.chat_id, status)
             except Exception as ex:
                 await status.edit("⚠️ Could not search all group members.\n<code>%s</code>\nWill use members already indexed from group activity." % html.escape(str(ex)[:180]), parse_mode="html")
-            cursor = tagall_members.find({"uid": uid, "chat_id": int(e.chat_id), "opted_out": {"$ne": True}}).sort("seen_at", -1).limit(TAGALL_MEMBER_LIMIT)
-            members = await cursor.to_list(length=TAGALL_MEMBER_LIMIT)
+            cursor = tagall_members.find({"uid": uid, "chat_id": int(e.chat_id), "opted_out": {"$ne": True}}).sort("seen_at", -1).limit(TAGALL_MAX_MENTIONS)
+            members = await cursor.to_list(length=TAGALL_MAX_MENTIONS)
             if not members:
                 return await status.edit("No eligible members found. Try <code>%stagrefresh</code>." % client.prefix, parse_mode="html")
             await tagall_runs.update_one({"uid": uid, "chat_id": int(e.chat_id)}, {"$set": {"last_started": time.time(), "member_count": len(members)}}, upsert=True)
             await status.edit(
-                "📣 <b>ZYRA TAGALL STARTED</b>\n"
-                f"Eligible members: <b>{len(members)}</b>\n"
-                f"Batch size: <b>{TAGALL_BATCH_SIZE}</b>\n"
+                "📣 <b>𝐓𝐀𝐆𝐀𝐋𝐋 · 𝐒𝐓𝐀𝐑𝐓𝐄𝐃</b>\n"
+                f"Eligible members: <b>{len(members)}</b> (maximum {TAGALL_MAX_MENTIONS} per run)\n"
+                "One member per message · quote style\n"
                 f"Stop: <code>{client.prefix}tagstop</code>", parse_mode="html"
             )
-            sent_batches = failed_batches = 0
-            for offset in range(0, len(members), TAGALL_BATCH_SIZE):
+            sent_members = failed_members = 0
+            for index, member in enumerate(members):
                 if stop_event.is_set():
                     break
-                batch = members[offset:offset + TAGALL_BATCH_SIZE]
-                mentions = []
-                for member in batch:
-                    member_id = int(member.get("user_id", 0) or 0)
-                    if not member_id:
-                        continue
-                    display = html.escape((member.get("name") or "Member")[:64])
-                    mentions.append(f'<a href="tg://user?id={member_id}">{display}</a>')
-                if not mentions:
+                member_id = int(member.get("user_id", 0) or 0)
+                if not member_id:
                     continue
-                payload = f"<b>{html.escape(custom)}</b>\n" + " · ".join(mentions)
+                display = html.escape((member.get("name") or "Member")[:64])
+                mention = f'<a href="tg://user?id={member_id}">{display}</a>'
+                payload = (
+                    "╭━━━『 📣 𝐌𝐄𝐌𝐁𝐄𝐑 𝐂𝐀𝐋𝐋 』━━━╮\n"
+                    f"<blockquote>{html.escape(custom)}\n\n👤 {mention}</blockquote>\n"
+                    "╰━━━『 𝐒𝐓𝐀𝐘 𝐀𝐂𝐓𝐈𝐕𝐄 』━━━╯"
+                )
                 try:
                     await client.send_message(e.chat_id, payload, parse_mode="html", link_preview=False)
-                    sent_batches += 1
+                    sent_members += 1
                 except Exception as ex:
                     wait_seconds = getattr(ex, "seconds", None)
                     if wait_seconds is not None:
-                        await status.edit(f"⏳ Telegram rate limit — waiting {int(wait_seconds)} seconds.\nSent batches: {sent_batches}", parse_mode="html")
+                        await status.edit(
+                            f"⏳ Telegram rate limit — waiting {int(wait_seconds)} seconds.\n"
+                            f"Sent: {sent_members} · Failed: {failed_members}", parse_mode="html"
+                        )
                         await asyncio.sleep(max(1, int(wait_seconds) + 1))
                         if stop_event.is_set():
                             break
                         try:
                             await client.send_message(e.chat_id, payload, parse_mode="html", link_preview=False)
-                            sent_batches += 1
+                            sent_members += 1
                         except Exception:
-                            failed_batches += 1
+                            failed_members += 1
                     else:
-                        failed_batches += 1
-                if (offset // TAGALL_BATCH_SIZE + 1) % 10 == 0:
+                        failed_members += 1
+                if (index + 1) % 5 == 0:
                     try:
                         await status.edit(
-                            f"📣 <b>ZYRA TAGALL RUNNING</b>\n"
-                            f"Progress: <b>{min(100, int((offset+len(batch))*100/len(members)))}%</b>\n"
-                            f"Batches sent: <b>{sent_batches}</b> · Failed: <b>{failed_batches}</b>\n"
+                            "📣 <b>𝐓𝐀𝐆𝐀𝐋𝐋 · 𝐈𝐍 𝐏𝐑𝐎𝐆𝐑𝐄𝐒𝐒</b>\n"
+                            f"Progress: <b>{min(100, int((index + 1) * 100 / len(members)))}%</b>\n"
+                            f"Sent: <b>{sent_members}</b> · Failed: <b>{failed_members}</b>\n"
                             f"Use <code>{client.prefix}tagstop</code> to stop.", parse_mode="html"
                         )
                     except Exception:
                         pass
-                if offset + TAGALL_BATCH_SIZE < len(members) and not stop_event.is_set():
+                if index + 1 < len(members) and not stop_event.is_set():
                     await asyncio.sleep(TAGALL_DELAY_SECONDS)
             result = "🛑 <b>TAGALL STOPPED</b>" if stop_event.is_set() else "✅ <b>TAGALL COMPLETED</b>"
-            await status.edit(f"{result}\n\nMembers indexed: <b>{len(members)}</b>\nMessages sent: <b>{sent_batches}</b>\nFailed batches: <b>{failed_batches}</b>", parse_mode="html")
+            await status.edit(f"{result}\n\nMembers processed: <b>{len(members)}</b>\nIndividual messages sent: <b>{sent_members}</b>\nFailed messages: <b>{failed_members}</b>", parse_mode="html")
         finally:
             tagall_running.pop(key, None)
 
