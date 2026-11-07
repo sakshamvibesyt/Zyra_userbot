@@ -10,6 +10,7 @@ import time
 
 from telethon import events
 import db as database
+from telethon.tl.types import DocumentAttributeSticker
 
 # In-memory AFK state; reset when the worker restarts.
 _AFK = {}
@@ -67,74 +68,154 @@ def setup(client):
     notes = database.db.zyra_notes
     replies = database.db.zyra_replies
     filters = database.db.zyra_filters
+    stickers = database.db.zyra_sticker_replies
+    sticker_settings = database.db.zyra_sticker_settings
+    sticker_cooldowns = {}
     afk_settings = database.db.zyra_afk_settings
     afk_states = database.db.zyra_afk_states
 
-    @client.on(events.NewMessage(pattern=r"^" + p + r"help$", outgoing=True))
+    # Paginated, quote-style help center. Each page stays compact and explains
+    # commands with practical examples. Callback access is restricted to the owner.
+    def _help_pages():
+        prefix = html.escape(client.prefix)
+        return [
+            (
+                "<b>╭━━━『 🎀 𝐙𝐘𝐑𝐀 · 𝐇𝐄𝐋𝐏 』━━━╮</b>\n"
+                "<i>Page 1/5 · Basics & Profile</i>\n\n"
+                "<blockquote><b>⚡ BASIC COMMANDS</b>\n"
+                f"<code>{prefix}ping</code> — response speed check karo\n"
+                f"<code>{prefix}alive</code> — account online hai ya nahi\n"
+                f"<code>{prefix}help</code> — ye help guide kholo\n"
+                f"<code>{prefix}id</code> — apni/chat ID dekho; kisi ke msg par reply karke uski ID dekho\n\n"
+                "<b>👤 PROFILE CLONE / RESTORE</b>\n"
+                f"Reply to someone's message: <code>{prefix}clone</code>\n"
+                f"<code>{prefix}clone @username</code> — username se profile select karo\n"
+                f"<code>{prefix}reclone</code> or <code>{prefix}revert</code> — apni saved profile wapas lagao\n\n"
+                "<i>Clone sirf permission lekar karo. Telegram kuch profile details ya photos access nahi karne deta.</i>"
+                "</blockquote>\n"
+                "<i>Use the buttons below to move through the guide.</i>"
+            ),
+            (
+                "<b>✧ TEXT &amp; COMMUNITY TOOLS</b>\n"
+                "<i>Page 2/5 · Text, tags &amp; message rotation</i>\n\n"
+                "<blockquote><b>✍️ TEXT UTILITIES</b>\n"
+                f"<code>{prefix}echo hello</code> — text dobara bhejo\n"
+                f"<code>{prefix}calc 2+2</code> — calculation karo\n"
+                f"<code>{prefix}reverse hello</code> — text ulta karo\n"
+                f"<code>{prefix}clap hello</code> — har word ke beech clap lagao\n"
+                f"<code>{prefix}emojify hello</code> — text mein emojis add karo\n"
+                f"<code>{prefix}spoiler text</code> — text ko spoiler banao\n"
+                f"<code>{prefix}type hello</code> — typewriter effect se bhejo\n\n"
+                "<b>👥 SMART TAGS (GROUP)</b>\n"
+                f"<code>{prefix}tagrefresh</code> — group ke available members scan/save karo\n"
+                f"<code>{prefix}tagall [message]</code> — saved members ko mention karo (admin only)\n"
+                f"<code>{prefix}taglist</code> — saved aur opt-out members ka count dekho\n"
+                f"<code>{prefix}tagjoin</code> / <code>{prefix}tagleave</code> — tagging allow/stop karo\n"
+                f"<code>{prefix}tagstop</code> — chal raha tag process roko\n"
+                f"<code>{prefix}tagclear</code> — is group ki saved member list clear karo\n\n"
+                "<b>🔁 MESSAGE ROTATION</b>\n"
+                f"<code>{prefix}addraid msg 1 | msg 2</code> — 20 tak messages save karo\n"
+                f"<code>{prefix}raid 5</code> — 1–10 saved messages bhejo\n"
+                f"<code>{prefix}clearraid</code> — saved messages delete karo"
+                "</blockquote>\n"
+                "<i>Telegram har member ko list nahi karta. Sirf available members tag honge; opt-out aur limits apply hongi.</i>"
+            ),
+            (
+                "<b>☾ PERSONAL & AUTO-DROP</b>\n"
+                "<i>Page 3/5 · AFK, promo & DM replies</i>\n\n"
+                "<blockquote><b>🌙 AFK</b>\n"
+                f"<code>{prefix}afk</code> — AFK mode on karo\n"
+                f"<code>{prefix}afk busy right now</code> — custom AFK message ke saath on karo\n"
+                f"<code>{prefix}afkmsg message</code> — default AFK message save karo\n"
+                f"<code>{prefix}afkmsg</code> — saved message dekho\n"
+                f"<code>{prefix}unafk</code> — AFK mode off karo\n\n"
+                "<b>📢 AUTO PROMO</b>\n"
+                f"<code>{prefix}promo on</code> / <code>{prefix}promo off</code> — sticker reply on/off karo\n"
+                f"<code>{prefix}promo status</code> — settings dekho\n"
+                f"<code>{prefix}promo set your text</code> — promo message set karo (single line)\n"
+                f"<code>{prefix}promo add LABEL | URL</code> — promo link save karo\n"
+                f"<code>{prefix}promo list</code> / <code>{prefix}promo remove 1</code> — links dekho ya remove karo\n"
+                f"<code>{prefix}promo time 12h</code> — promo ka time set karo\n"
+                f"<code>{prefix}promo test</code> — promo ka test dekho\n\n"
+                "<b>💌 DM TRAP</b>\n"
+                f"<code>{prefix}dmtrap on</code> / <code>{prefix}dmtrap off</code> — sticker reply on/off karo\n"
+                f"<code>{prefix}dmtrap set your text</code> — set DM reply\n"
+                f"<code>{prefix}dmtrap status</code> — settings dekho\n"
+                f"<code>{prefix}dmtrap cooldown</code> / <code>{prefix}dmtrap reset</code> — timing controls"
+                "</blockquote>\n"
+                "<i>Recurring DM promo sirf un logon ko bhejo jinhone subscribe kiya ho. Telegram limits aur group rules follow karo.</i>"
+            ),
+            (
+                "<b>🗂 NOTES &amp; AUTO REPLIES</b>\n"
+                "<i>Page 4/5 · Text triggers & sticker replies</i>\n\n"
+                "<blockquote><b>📝 NOTES</b>\n"
+                f"<code>{prefix}note name | text</code> — note save karo\n"
+                f"<code>{prefix}getnote name</code> — note padho\n"
+                f"<code>{prefix}delnote name</code> — note delete karo\n"
+                f"<code>{prefix}notes</code> — saare notes dekho\n\n"
+                "<b>💬 AUTO-REPLY (ALL CHATS)</b>\n"
+                f"<code>{prefix}autoreply hi | Hello!</code> — exact trigger par text reply save karo\n"
+                f"<code>{prefix}delreply hi</code> — reply delete karo\n"
+                f"<code>{prefix}replies</code> — saved replies dekho\n\n"
+                "<b>🔎 CHAT FILTERS (CURRENT CHAT)</b>\n"
+                f"<code>{prefix}filter word | reply</code> — message mein word aane par reply bhejo\n"
+                f"<code>{prefix}stop word</code> — filter hatao\n"
+                f"<code>{prefix}filters</code> — filters dekho\n\n"
+                "<b>🎭 AUTO STICKER REPLIES</b>\n"
+                f"1. Send/save a Telegram sticker in a chat you can access.\n"
+                f"2. Reply to that sticker with <code>{prefix}setsticker hi</code>.\n"
+                f"3. An incoming exact <code>hi</code> trigger can send that sticker.\n"
+                f"<code>{prefix}stickers</code> — saved sticker triggers dekho\n"
+                f"<code>{prefix}delsticker hi</code> — sticker trigger hatao\n"
+                f"<code>{prefix}sticker on</code> / <code>{prefix}sticker off</code> — sticker reply on/off karo\n"
+                f"<code>{prefix}sticker status</code> — sticker reply status dekho"
+                "</blockquote>\n"
+                "<i>Auto-reply poore message se match hota hai. Filter message ke andar word dhoondhta hai. Sticker reply exact trigger par chalta hai aur cooldown bhi hai.</i>"
+            ),
+            (
+                "<b>⚒ ADMIN, AI &amp; SETTINGS</b>\n"
+                "<i>Page 5/5 · Extra help</i>\n\n"
+                "<blockquote><b>🛡 GROUP ADMIN</b>\n"
+                f"<code>{prefix}adminhelp</code> — group moderation commands ki guide kholo\n"
+                "Admin commands tabhi chalenge jab tumhare account ke paas group mein required permissions hon.\n\n"
+                "<b>✦ AI</b>\n"
+                f"<code>{prefix}ai your question</code> — configured AI se sawal poochho\n\n"
+                "<b>🎛 DASHBOARD</b>\n"
+                f"<code>{prefix}dashboard</code> — control dashboard kholo\n"
+                f"<code>{prefix}dashboard promo</code> — Auto Promo settings\n"
+                f"<code>{prefix}dashboard dm</code> — DM Trap settings\n"
+                f"<code>{prefix}dashboard tags</code> — Smart Tags settings\n"
+                f"<code>{prefix}dashboard ai</code> — AI settings"
+                "</blockquote>\n"
+                "<i>Prefix tumhari config ke hisaab se hai. Kuch features ke liye Render variables/API keys chahiye. Login code aur 2-step password kisi ko mat dena.</i>\n\n"
+                "<b>╰━━━『 ᴍᴀᴅ𝐄 𝐖𝐈𝐓𝐇 𝐙𝐘𝐑𝐀 💜 』━━━╯</b>"
+            ),
+        ]
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"help(?:\s+(\d+))?$", outgoing=True))
     async def help_cmd(e):
-        prefix = client.prefix
+        pages = _help_pages()
+        try:
+            page = int(e.pattern_match.group(1) or "1") - 1
+        except (TypeError, ValueError):
+            page = 0
+        if page < 0 or page >= len(pages):
+            return await e.edit(
+                "❌ Help page not found. Use <code>%shelp</code> to open page 1 or <code>%shelp 1-5</code> to choose a page."
+                % (html.escape(client.prefix), html.escape(client.prefix)),
+                parse_mode="html",
+            )
+        prefix = html.escape(client.prefix)
+        nav = []
+        if page > 0:
+            nav.append(f"‹ Previous: <code>{prefix}help {page}</code>")
+        if page < len(pages) - 1:
+            nav.append(f"Next: <code>{prefix}help {page + 2}</code> ›")
+        nav.append(f"Page <b>{page + 1}/{len(pages)}</b>")
         await e.edit(
-            "<b>╭━━━『 🎀 𝐙𝐘𝐑𝐀 𝐔𝐒𝐄𝐑𝐁𝐎𝐓 』━━━╮</b>\n"
-            "<i>✦ Prime tools · Command guide ✦</i>\n"
-            "<b>━━━━━━━━━━━━━━━━━━</b>\n\n"
-            "<b>⚡ BASIC</b>\n"
-            f"<code>{prefix}ping</code> · response speed\n"
-            f"<code>{prefix}alive</code> · account status\n"
-            f"<code>{prefix}help</code> · show this guide\n"
-            f"<code>{prefix}id</code> · your/chat ID; reply to get target ID\n\n"
-            "<b>👤 PROFILE CLONE / RESTORE</b>\n"
-            f"Reply to a user's message: <code>{prefix}clone</code>\n"
-            f"<code>{prefix}clone @username</code> · clone selected profile\n"
-            f"<code>{prefix}reclone</code> or <code>{prefix}revert</code> · restore saved original profile\n"
-            "<i>Use only with permission. Profile photo availability depends on Telegram.</i>\n\n"
-            "<b>✧ TEXT & UTILITIES</b>\n"
-            f"<code>{prefix}echo text</code> · repeat text\n"
-            f"<code>{prefix}calc 2+2</code> · calculate\n"
-            f"<code>{prefix}reverse text</code> · reverse text\n"
-            f"<code>{prefix}clap text</code> · clap between words\n"
-            f"<code>{prefix}emojify text</code> · add random emojis\n"
-            f"<code>{prefix}spoiler text</code> · spoiler formatting\n"
-            f"<code>{prefix}type text</code> · typewriter effect\n"
-            f"<code>{prefix}dashboard</code> · open premium control center\n"
-            f"<code>{prefix}tagrefresh</code> · scan and save visible group members\n"
-            f"<code>{prefix}tagall [message]</code> · mention indexed group members (admin only)\n"
-            f"<code>{prefix}taglist</code> · show saved/opted-out counts\n"
-            f"<code>{prefix}tagjoin / {prefix}tagleave</code> · opt in/out of mentions\n"
-            f"<code>{prefix}tagstop</code> · stop the active TagAll process\n"
-            f"<code>{prefix}tagclear</code> · clear current group member index\n"
-            f"<code>{prefix}addraid msg1 | msg2</code> · save message rotation\n"
-            f"<code>{prefix}raid 5</code> · send up to 10 saved messages\n"
-            f"<code>{prefix}clearraid</code> · clear saved messages\n\n"
-            "<b>☾ AFK & AUTO-DROP</b>\n"
-            f"<code>{prefix}afk [message]</code> · activate AFK with custom text\n"
-            f"<code>{prefix}afkmsg message</code> · save default AFK message\n"
-            f"<code>{prefix}afkmsg</code> · view saved message\n"
-            f"<code>{prefix}unafk</code> · turn AFK off\n"
-            f"<code>{prefix}promo on</code> · enable auto-drop\n"
-            f"<code>{prefix}promo off</code> · pause auto-drop\n"
-            f"<code>{prefix}promo status</code> · view status/channel\n"
-            f"<code>{prefix}promo set/add/remove/time/test</code> · configure/test promo\n"
-            f"<code>{prefix}dmtrap on/off/set/status</code> · configure DM auto-reply\n"
-            f"<code>{prefix}dmtrap cooldown/reset</code> · DM reply timing/defaults\n\n"
-            "<b>🗂 NOTES, AUTO-REPLY & FILTERS</b>\n"
-            f"<code>{prefix}note name | text</code> · save note\n"
-            f"<code>{prefix}getnote name</code> · read note\n"
-            f"<code>{prefix}delnote name</code> · delete note\n"
-            f"<code>{prefix}notes</code> · list notes\n"
-            f"<code>{prefix}autoreply trigger | reply</code> · add auto-reply\n"
-            f"<code>{prefix}delreply trigger</code> · remove auto-reply\n"
-            f"<code>{prefix}replies</code> · list auto-replies\n"
-            f"<code>{prefix}filter word | reply</code> · add current-chat filter\n"
-            f"<code>{prefix}stop word</code> · remove filter\n"
-            f"<code>{prefix}filters</code> · list current-chat filters\n\n"
-            "<b>⚒ GROUP ADMIN</b>\n"
-            f"<code>{prefix}adminhelp</code> · admin-only command guide\n\n"
-            "<b>✦ AI</b>\n"
-            f"<code>{prefix}ai question</code> · ask configured AI\n\n"
-            "<b>━━━━━━━━━━━━━━━━━━</b>\n"
-            "<i>Prefix follows your configuration. Promo needs PROMO_CHANNEL; AI needs a valid API key.\n"
-            "Admin commands require Telegram permissions. Clone only with permission.</i>\n"
-            "<b>╰━━━『 ᴍᴀᴅᴇ ᴡɪᴛʜ ᴢʏʀᴀ 💜 』━━━╯</b>"
+            pages[page] + "\n\n<blockquote>" + "  ·  ".join(nav) + "</blockquote>",
+            parse_mode="html",
+            link_preview=False,
         )
 
 
@@ -536,6 +617,22 @@ def setup(client):
             except Exception:
                 pass
         text = e.raw_text.strip()
+        # Sticker replies use exact, case-insensitive trigger matches.
+        sticker_cfg = await sticker_settings.find_one({"uid": uid})
+        if sticker_cfg is None or sticker_cfg.get("enabled", True):
+            sticker_doc = await stickers.find_one({"uid": uid, "trigger": text.casefold()})
+            if sticker_doc:
+                cooldown_key = (e.chat_id, e.sender_id, text.casefold())
+                now = time.monotonic()
+                if now - sticker_cooldowns.get(cooldown_key, 0) >= 30:
+                    sticker_cooldowns[cooldown_key] = now
+                    try:
+                        source = await client.get_messages(sticker_doc["source_chat_id"], ids=sticker_doc["source_message_id"])
+                        if source and source.media:
+                            await client.send_file(e.chat_id, source, reply_to=e.id)
+                    except Exception:
+                        # Keep the listener alive if a saved source message was deleted or unavailable.
+                        pass
         # Personal auto-replies are exact, case-insensitive matches.
         doc = await replies.find_one({"uid": uid, "trigger": text.casefold()})
         if doc:
@@ -607,3 +704,47 @@ def setup(client):
     async def list_filters(e):
         items = await filters.find({"uid": uid, "chat_id": e.chat_id}).to_list(length=50)
         await e.edit("<b>Chat filters</b>\n" + ("\n".join("• " + x["trigger"] for x in items) if items else "No filters in this chat."))
+
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"setsticker\s+(.+)$", outgoing=True))
+    async def set_sticker_reply(e):
+        trigger = e.pattern_match.group(1).strip().casefold()
+        if not e.is_reply:
+            return await e.edit("Reply to a Telegram sticker with <code>%ssetsticker trigger</code>." % client.prefix)
+        source = await e.get_reply_message()
+        is_sticker = bool(
+            source and source.document and any(
+                isinstance(attr, DocumentAttributeSticker) for attr in (source.document.attributes or [])
+            )
+        )
+        if not is_sticker:
+            return await e.edit("❌ Reply to an actual Telegram sticker, then use this command.")
+        await stickers.update_one(
+            {"uid": uid, "trigger": trigger},
+            {"$set": {"trigger": trigger, "source_chat_id": source.chat_id, "source_message_id": source.id}},
+            upsert=True,
+        )
+        await e.edit("🎭 Sticker reply saved for <code>%s</code>." % html.escape(trigger))
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"delsticker\s+(.+)$", outgoing=True))
+    async def delete_sticker_reply(e):
+        trigger = e.pattern_match.group(1).strip().casefold()
+        result = await stickers.delete_one({"uid": uid, "trigger": trigger})
+        await e.edit("🗑 Sticker reply removed." if result.deleted_count else "Sticker trigger not found.")
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"stickers$", outgoing=True))
+    async def list_sticker_replies(e):
+        items = await stickers.find({"uid": uid}).to_list(length=100)
+        lines = ["• <code>%s</code>" % html.escape(item["trigger"]) for item in items]
+        await e.edit("🎭 <b>Saved sticker triggers</b>\n" + ("\n".join(lines) if lines else "No sticker replies saved."))
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"sticker\s+(on|off|status)$", outgoing=True))
+    async def sticker_reply_control(e):
+        action = e.pattern_match.group(1).lower()
+        cfg = await sticker_settings.find_one({"uid": uid}) or {"enabled": True}
+        if action == "status":
+            enabled = cfg.get("enabled", True)
+            return await e.edit("🎭 Auto Sticker Reply: <b>%s</b>" % ("ON ✅" if enabled else "OFF ⏸"))
+        enabled = action == "on"
+        await sticker_settings.update_one({"uid": uid}, {"$set": {"enabled": enabled}}, upsert=True)
+        await e.edit("🎭 Auto Sticker Reply <b>%s</b>." % ("enabled ✅" if enabled else "paused ⏸"))
