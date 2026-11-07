@@ -16,6 +16,31 @@ from telethon.tl.types import DocumentAttributeSticker
 _AFK = {}
 
 
+def _render_afk_message(template, sender):
+    """Safely render sender placeholders in an AFK reply."""
+    first = (getattr(sender, "first_name", None) or "there").strip()
+    username = getattr(sender, "username", None) or ""
+    sender_id = str(getattr(sender, "id", "") or "")
+
+    # Escape the user-authored template first, then insert escaped sender data.
+    rendered = html.escape(template)
+    values = {
+        "first_name": html.escape(first),
+        "name": html.escape(first),
+        "username": html.escape("@" + username if username else ""),
+        "id": html.escape(sender_id),
+        "mention": (
+            f'<a href="tg://user?id={html.escape(sender_id, quote=True)}">{html.escape(first)}</a>'
+            if sender_id else html.escape(first)
+        ),
+    }
+    return re.sub(
+        r"\{(first_name|name|username|id|mention)\}",
+        lambda match: values[match.group(1)],
+        rendered,
+    )
+
+
 def _env_int(name, default, minimum, maximum):
     try:
         value = int(os.environ.get(name, str(default)))
@@ -618,8 +643,10 @@ def setup(client):
             try:
                 ai_cfg = await database.db.zyra_ai_settings.find_one({"uid": uid}) or {}
                 if not ai_cfg.get("auto_enabled", False):
-                    # Static AFK fallback is retained unless AI auto-replies are enabled.
-                    await e.reply(html.escape(afk_data["message"]))
+                    # Render sender placeholders while keeping user-supplied text escaped.
+                    sender = await e.get_sender()
+                    reply_text = _render_afk_message(afk_data["message"], sender)
+                    await e.reply(reply_text, parse_mode="html")
             except Exception:
                 pass
         text = e.raw_text.strip()
