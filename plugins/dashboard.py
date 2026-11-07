@@ -57,7 +57,7 @@ def setup(client):
                     f"<code>{p}ai auto on/off</code> — reply when mentioned/replied to\n"
                     f"<code>{p}ai sticker on/off</code> — react to stickers replying to you\n"
                     f"<code>{p}ai status</code> — view AI status\n\n"
-                    "AI requires VENICE_API_KEY and AI_MODEL in Render environment variables.")
+                    "AI requires OPENAI_API_KEY and AI_MODEL in Render environment variables.")
         return ("<b>✦ 𝐙𝐘𝐑𝐀 𝐏𝐑𝐄𝐌𝐈𝐔𝐌 𝐃𝐀𝐒𝐇𝐁𝐎𝐀𝐑𝐃 ✦</b>\n"
                 "<i>Dark control center · Account workspace</i>\n\n"
                 f"📢 Auto Promo: <b>{'ON' if promo_on else 'OFF'}</b>\n"
