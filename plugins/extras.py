@@ -93,7 +93,7 @@ def setup(client):
                 f"<code>{prefix}reclone</code> or <code>{prefix}revert</code> — apni saved profile wapas lagao\n\n"
                 "<i>Clone sirf permission lekar karo. Telegram kuch profile details ya photos access nahi karne deta.</i>"
                 "</blockquote>\n"
-                "<i>For working Previous / Next buttons, open the Zyra bot chat and send <code>/help</code>. Telegram only allows bot accounts to send callback buttons; this user-account help keeps numbered pages as a fallback.</i>"
+                "<i>Use the buttons below to move through the guide.</i>"
             ),
             (
                 "<b>✧ TEXT &amp; COMMUNITY TOOLS</b>\n"
@@ -108,7 +108,7 @@ def setup(client):
                 f"<code>{prefix}type hello</code> — typewriter effect se bhejo\n\n"
                 "<b>👥 SMART TAGS (GROUP)</b>\n"
                 f"<code>{prefix}tagrefresh</code> — group ke available members scan/save karo\n"
-                f"<code>{prefix}tagall [message]</code> — one member per quote-style message (admin only, max 20/run)\n"
+                f"<code>{prefix}tagall [message]</code> — saved members ko mention karo (admin only)\n"
                 f"<code>{prefix}taglist</code> — saved aur opt-out members ka count dekho\n"
                 f"<code>{prefix}tagjoin</code> / <code>{prefix}tagleave</code> — tagging allow/stop karo\n"
                 f"<code>{prefix}tagstop</code> — chal raha tag process roko\n"
@@ -130,15 +130,16 @@ def setup(client):
                 f"<code>{prefix}afkmsg</code> — saved message dekho\n"
                 f"<code>{prefix}unafk</code> — AFK mode off karo\n\n"
                 "<b>📢 AUTO PROMO</b>\n"
-                f"<code>{prefix}promo on</code> / <code>{prefix}promo off</code> — sticker reply on/off karo\n"
+                f"<code>{prefix}promo on</code> / <code>{prefix}promo off</code> — automatic promotion on/off karo\n"
                 f"<code>{prefix}promo status</code> — settings dekho\n"
                 f"<code>{prefix}promo set your text</code> — promo message set karo (single line)\n"
                 f"<code>{prefix}promo add LABEL | URL</code> — promo link save karo\n"
                 f"<code>{prefix}promo list</code> / <code>{prefix}promo remove 1</code> — links dekho ya remove karo\n"
                 f"<code>{prefix}promo time 12h</code> — promo ka time set karo\n"
+                f"<code>{prefix}promo trigger on/off/status</code> — mention/reply promo control\n"
                 f"<code>{prefix}promo test</code> — promo ka test dekho\n\n"
                 "<b>💌 DM TRAP</b>\n"
-                f"<code>{prefix}dmtrap on</code> / <code>{prefix}dmtrap off</code> — sticker reply on/off karo\n"
+                f"<code>{prefix}dmtrap on</code> / <code>{prefix}dmtrap off</code> — DM reply on/off karo\n"
                 f"<code>{prefix}dmtrap set your text</code> — set DM reply\n"
                 f"<code>{prefix}dmtrap status</code> — settings dekho\n"
                 f"<code>{prefix}dmtrap cooldown</code> / <code>{prefix}dmtrap reset</code> — timing controls"
@@ -179,7 +180,10 @@ def setup(client):
                 f"<code>{prefix}adminhelp</code> — group moderation commands ki guide kholo\n"
                 "Admin commands tabhi chalenge jab tumhare account ke paas group mein required permissions hon.\n\n"
                 "<b>✦ AI</b>\n"
-                f"<code>{prefix}ai your question</code> — configured AI se sawal poochho\n\n"
+                f"<code>{prefix}ai your question</code> — AI se sawal poochho\n"
+                f"<code>{prefix}ai auto on/off</code> — mention/reply par AI response\n"
+                f"<code>{prefix}ai sticker on/off</code> — reply-sticker par AI reaction\n"
+                f"<code>{prefix}ai status</code> — AI settings dekho\n\n"
                 "<b>🎛 DASHBOARD</b>\n"
                 f"<code>{prefix}dashboard</code> — control dashboard kholo\n"
                 f"<code>{prefix}dashboard promo</code> — Auto Promo settings\n"
@@ -276,11 +280,9 @@ def setup(client):
     tagall_members = database.db.zyra_tagall_member_entries
     tagall_running = {}
     tagall_runs = database.db.zyra_tagall_runs
-    TAGALL_MEMBER_LIMIT = _env_int("TAGALL_MAX_MEMBERS", 5000, 50, 10000)
-    # Each run mentions at most 20 opted-in members, one message per member.
-    # The cooldown and delay are intentional safeguards against mention spam.
-    TAGALL_MAX_MENTIONS = _env_int("TAGALL_MAX_MENTIONS", 20, 1, 20)
-    TAGALL_DELAY_SECONDS = _env_float("TAGALL_DELAY_SECONDS", 4.0, 4.0, 30.0)
+    TAGALL_MEMBER_LIMIT = _env_int("TAGALL_MAX_MEMBERS", 50, 10, 200)
+    TAGALL_BATCH_SIZE = 1
+    TAGALL_DELAY_SECONDS = _env_float("TAGALL_DELAY_SECONDS", 4.0, 3.0, 30.0)
     TAGALL_COOLDOWN_SECONDS = _env_int("TAGALL_COOLDOWN", 3600, 1800, 604800)
 
     async def save_tag_member(chat_id, sender):
@@ -423,65 +425,63 @@ def setup(client):
                 scanned, saved, skipped = await refresh_group_members(e.chat_id, status)
             except Exception as ex:
                 await status.edit("⚠️ Could not search all group members.\n<code>%s</code>\nWill use members already indexed from group activity." % html.escape(str(ex)[:180]), parse_mode="html")
-            cursor = tagall_members.find({"uid": uid, "chat_id": int(e.chat_id), "opted_out": {"$ne": True}}).sort("seen_at", -1).limit(TAGALL_MAX_MENTIONS)
-            members = await cursor.to_list(length=TAGALL_MAX_MENTIONS)
+            cursor = tagall_members.find({"uid": uid, "chat_id": int(e.chat_id), "opted_out": {"$ne": True}}).sort("seen_at", -1).limit(TAGALL_MEMBER_LIMIT)
+            members = await cursor.to_list(length=TAGALL_MEMBER_LIMIT)
             if not members:
                 return await status.edit("No eligible members found. Try <code>%stagrefresh</code>." % client.prefix, parse_mode="html")
             await tagall_runs.update_one({"uid": uid, "chat_id": int(e.chat_id)}, {"$set": {"last_started": time.time(), "member_count": len(members)}}, upsert=True)
             await status.edit(
-                "📣 <b>𝐓𝐀𝐆𝐀𝐋𝐋 · 𝐒𝐓𝐀𝐑𝐓𝐄𝐃</b>\n"
-                f"Eligible members: <b>{len(members)}</b> (maximum {TAGALL_MAX_MENTIONS} per run)\n"
-                "One member per message · quote style\n"
+                "📣 <b>ZYRA TAGALL STARTED</b>\n"
+                f"Eligible members: <b>{len(members)}</b>\n"
+                f"Format: <b>1 member per message</b> · Delay: <b>{TAGALL_DELAY_SECONDS:g}s</b>\n"
                 f"Stop: <code>{client.prefix}tagstop</code>", parse_mode="html"
             )
-            sent_members = failed_members = 0
-            for index, member in enumerate(members):
+            sent_batches = failed_batches = 0
+            for offset in range(0, len(members), TAGALL_BATCH_SIZE):
                 if stop_event.is_set():
                     break
-                member_id = int(member.get("user_id", 0) or 0)
-                if not member_id:
+                batch = members[offset:offset + TAGALL_BATCH_SIZE]
+                mentions = []
+                for member in batch:
+                    member_id = int(member.get("user_id", 0) or 0)
+                    if not member_id:
+                        continue
+                    display = html.escape((member.get("name") or "Member")[:64])
+                    mentions.append(f'<a href="tg://user?id={member_id}">{display}</a>')
+                if not mentions:
                     continue
-                display = html.escape((member.get("name") or "Member")[:64])
-                mention = f'<a href="tg://user?id={member_id}">{display}</a>'
-                payload = (
-                    "╭━━━『 📣 𝐌𝐄𝐌𝐁𝐄𝐑 𝐂𝐀𝐋𝐋 』━━━╮\n"
-                    f"<blockquote>{html.escape(custom)}\n\n👤 {mention}</blockquote>\n"
-                    "╰━━━『 𝐒𝐓𝐀𝐘 𝐀𝐂𝐓𝐈𝐕𝐄 』━━━╯"
-                )
+                payload = f"<blockquote><b>{html.escape(custom)}</b>\n{mentions[0]}</blockquote>"
                 try:
                     await client.send_message(e.chat_id, payload, parse_mode="html", link_preview=False)
-                    sent_members += 1
+                    sent_batches += 1
                 except Exception as ex:
                     wait_seconds = getattr(ex, "seconds", None)
                     if wait_seconds is not None:
-                        await status.edit(
-                            f"⏳ Telegram rate limit — waiting {int(wait_seconds)} seconds.\n"
-                            f"Sent: {sent_members} · Failed: {failed_members}", parse_mode="html"
-                        )
+                        await status.edit(f"⏳ Telegram rate limit — waiting {int(wait_seconds)} seconds.\nSent batches: {sent_batches}", parse_mode="html")
                         await asyncio.sleep(max(1, int(wait_seconds) + 1))
                         if stop_event.is_set():
                             break
                         try:
                             await client.send_message(e.chat_id, payload, parse_mode="html", link_preview=False)
-                            sent_members += 1
+                            sent_batches += 1
                         except Exception:
-                            failed_members += 1
+                            failed_batches += 1
                     else:
-                        failed_members += 1
-                if (index + 1) % 5 == 0:
+                        failed_batches += 1
+                if (offset // TAGALL_BATCH_SIZE + 1) % 10 == 0:
                     try:
                         await status.edit(
-                            "📣 <b>𝐓𝐀𝐆𝐀𝐋𝐋 · 𝐈𝐍 𝐏𝐑𝐎𝐆𝐑𝐄𝐒𝐒</b>\n"
-                            f"Progress: <b>{min(100, int((index + 1) * 100 / len(members)))}%</b>\n"
-                            f"Sent: <b>{sent_members}</b> · Failed: <b>{failed_members}</b>\n"
+                            f"📣 <b>ZYRA TAGALL RUNNING</b>\n"
+                            f"Progress: <b>{min(100, int((offset+len(batch))*100/len(members)))}%</b>\n"
+                            f"Messages sent: <b>{sent_batches}</b> · Failed: <b>{failed_batches}</b>\n"
                             f"Use <code>{client.prefix}tagstop</code> to stop.", parse_mode="html"
                         )
                     except Exception:
                         pass
-                if index + 1 < len(members) and not stop_event.is_set():
+                if offset + TAGALL_BATCH_SIZE < len(members) and not stop_event.is_set():
                     await asyncio.sleep(TAGALL_DELAY_SECONDS)
             result = "🛑 <b>TAGALL STOPPED</b>" if stop_event.is_set() else "✅ <b>TAGALL COMPLETED</b>"
-            await status.edit(f"{result}\n\nMembers processed: <b>{len(members)}</b>\nIndividual messages sent: <b>{sent_members}</b>\nFailed messages: <b>{failed_members}</b>", parse_mode="html")
+            await status.edit(f"{result}\n\nMembers indexed: <b>{len(members)}</b>\nMessages sent: <b>{sent_batches}</b>\nFailed messages: <b>{failed_batches}</b>", parse_mode="html")
         finally:
             tagall_running.pop(key, None)
 
@@ -616,8 +616,10 @@ def setup(client):
         afk_data = await load_afk_state()
         if afk_data and e.sender_id and (e.is_private or e.mentioned):
             try:
-                # Escape user-configured text so any plain text, emoji, symbols, or newlines work safely.
-                await e.reply(html.escape(afk_data["message"]))
+                ai_cfg = await database.db.zyra_ai_settings.find_one({"uid": uid}) or {}
+                if not ai_cfg.get("auto_enabled", False):
+                    # Static AFK fallback is retained unless AI auto-replies are enabled.
+                    await e.reply(html.escape(afk_data["message"]))
             except Exception:
                 pass
         text = e.raw_text.strip()

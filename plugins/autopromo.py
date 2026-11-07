@@ -154,6 +154,29 @@ def setup(client):
         finally:
             in_flight.discard(key)
 
+    # Optional mention/reply promotion. It is off by default and still obeys the
+    # per-group promo interval/cooldown enforced by maybe_send().
+    @client.on(events.NewMessage(incoming=True))
+    async def promo_on_mention_or_reply(event):
+        if not event.is_group or not event.sender_id or event.sender_id == client.me_id:
+            return
+        try:
+            sender = await event.get_sender()
+            if not sender or getattr(sender, "bot", False):
+                return
+            cfg = await get_config()
+            if not cfg.get("enabled", DEFAULT_ON) or not cfg.get("trigger_enabled", False):
+                return
+            addressed = bool(event.mentioned)
+            if event.is_reply:
+                replied = await event.get_reply_message()
+                addressed = addressed or bool(replied and replied.sender_id == client.me_id)
+            if addressed:
+                await maybe_send(event.chat_id, is_group=True)
+        except Exception:
+            # Promotion automation must never interrupt ordinary chat handling.
+            return
+
     @client.on(events.NewMessage(pattern=r"^" + prefix + r"promo(?:\s+(.*))?$", outgoing=True))
     async def promo_control(e):
         raw = (e.pattern_match.group(1) or "").strip()
@@ -174,6 +197,16 @@ def setup(client):
             dm = await subscribers.count_documents({"uid": uid, "enabled": True})
             interval = int(cfg.get("interval_seconds", DEFAULT_INTERVAL))
             return await status_message(e, "PROMO STATUS", f"Account: <b>{'ON ✅' if cfg.get('enabled', DEFAULT_ON) else 'OFF 🛑'}</b>\nGroups enrolled: <b>{enabled_groups}</b>\nOpt-in DMs: <b>{dm}</b>\nInterval: <b>{interval // 3600}h</b>")
+        if action == "trigger":
+            if value.lower() not in ("on", "off", "status"):
+                return await status_message(e, "MENTION PROMO", f"Use <code>{client.prefix}promo trigger on</code>, <code>{client.prefix}promo trigger off</code>, or <code>{client.prefix}promo trigger status</code>.")
+            cfg = await get_config()
+            if value.lower() == "status":
+                enabled = bool(cfg.get("trigger_enabled", False))
+                return await status_message(e, "MENTION PROMO STATUS", f"Mention/reply promotion: <b>{'ON ✅' if enabled else 'OFF 🛑'}</b>\nIt only runs in enrolled groups and respects the group promo interval.")
+            enabled = value.lower() == "on"
+            await configs.update_one({"uid": uid}, {"$set": {"trigger_enabled": enabled}}, upsert=True)
+            return await status_message(e, "MENTION PROMO UPDATED", "Promo can now trigger when someone mentions you or replies to your message." if enabled else "Mention/reply-triggered promo is now off.")
         if action in ("set", "text"):
             if value.lower() == "clear":
                 await configs.update_one({"uid": uid}, {"$unset": {"text": ""}}, upsert=True)
@@ -257,6 +290,7 @@ def setup(client):
             f"<code>{client.prefix}promo add JOIN | https://t.me/group</code>\n"
             f"<code>{client.prefix}promo remove 1</code> · <code>{client.prefix}promo list</code>\n"
             f"<code>{client.prefix}promo time 12h</code>\n"
+            f"<code>{client.prefix}promo trigger on/off/status</code> · promo on mention/reply\n"
             f"Reply to media: <code>{client.prefix}promo image</code> · <code>{client.prefix}promo test</code>\n"
             f"Group exception: <code>{client.prefix}promo group off</code>\n"
             f"DM opt-in: <code>{client.prefix}promo subscribe/unsubscribe</code>"

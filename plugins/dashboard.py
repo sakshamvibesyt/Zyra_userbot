@@ -16,6 +16,7 @@ def setup(client):
     dmtrap = database.db.zyra_dmtrap_config
     groups = database.db.zyra_promo_groups
     subscribers = database.db.zyra_promo_subscribers
+    ai_settings = database.db.zyra_ai_settings
 
     async def render_page(page="home"):
         p = html.escape(client.prefix)
@@ -48,8 +49,14 @@ def setup(client):
                     f"<code>{p}dmtrap set Your reply {{first_name}}</code>\n"
                     f"<code>{p}dmtrap cooldown 3600</code>\n<code>{p}dmtrap reset</code>")
         if page == "ai":
+            acfg = await ai_settings.find_one({"uid": uid}) or {}
             return ("<b>🧠 AI BRAIN</b>\n\n"
-                    f"<code>{p}ai your question</code>\n\n"
+                    f"Chat replies: <b>{'ON' if acfg.get('auto_enabled') else 'OFF'}</b>\n"
+                    f"Sticker reactions: <b>{'ON' if acfg.get('sticker_enabled') else 'OFF'}</b>\n\n"
+                    f"<code>{p}ai your question</code> — ask AI\n"
+                    f"<code>{p}ai auto on/off</code> — reply when mentioned/replied to\n"
+                    f"<code>{p}ai sticker on/off</code> — react to stickers replying to you\n"
+                    f"<code>{p}ai status</code> — view AI status\n\n"
                     "AI requires VENICE_API_KEY and AI_MODEL in Render environment variables.")
         return ("<b>✦ 𝐙𝐘𝐑𝐀 𝐏𝐑𝐄𝐌𝐈𝐔𝐌 𝐃𝐀𝐒𝐇𝐁𝐎𝐀𝐑𝐃 ✦</b>\n"
                 "<i>Dark control center · Account workspace</i>\n\n"
@@ -60,7 +67,8 @@ def setup(client):
                 f"<code>{p}dashboard promo</code> · Auto Promo\n"
                 f"<code>{p}dashboard dm</code> · DM Trap\n"
                 f"<code>{p}dashboard tags</code> · Smart Tags\n"
-                f"<code>{p}dashboard ai</code> · AI Brain\n\n"
+                f"<code>{p}dashboard ai</code> · AI Brain\n"
+                f"<code>{p}promo trigger on/off</code> · Promo when mentioned/replied to\n\n"
                 "<i>Use the commands shown in each module to control settings.</i>")
 
     @client.on(events.NewMessage(pattern=r"^" + re.escape(client.prefix) + r"dashboard(?:\s+(home|promo|dm|tags|ai))?$", outgoing=True))
