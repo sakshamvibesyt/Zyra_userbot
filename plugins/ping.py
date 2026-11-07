@@ -1,11 +1,12 @@
 import time
+import re
 from telethon import events
 
 
 def setup(client):
-    p = client.prefix
+    p = re.escape(client.prefix)
 
-    @client.on(events.NewMessage(pattern=r"^" + p + r"ping", outgoing=True))
+    @client.on(events.NewMessage(pattern=r"^" + p + r"ping$", outgoing=True))
     async def ping(e):
         t = time.perf_counter()
         m = await e.reply("<b>Pong</b>")

@@ -3,6 +3,7 @@ import ast
 import asyncio
 import html
 import operator
+import os
 import random
 import re
 import time
@@ -12,6 +13,23 @@ import db as database
 
 # In-memory AFK state; reset when the worker restarts.
 _AFK = {}
+
+
+def _env_int(name, default, minimum, maximum):
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def _env_float(name, default, minimum, maximum):
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
 
 _OPS = {
     ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
@@ -51,7 +69,6 @@ def setup(client):
     filters = database.db.zyra_filters
     afk_settings = database.db.zyra_afk_settings
     afk_states = database.db.zyra_afk_states
-    smart_tag_cooldowns = {}
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"help$", outgoing=True))
     async def help_cmd(e):
@@ -78,8 +95,13 @@ def setup(client):
             f"<code>{prefix}emojify text</code> · add random emojis\n"
             f"<code>{prefix}spoiler text</code> · spoiler formatting\n"
             f"<code>{prefix}type text</code> · typewriter effect\n"
-            f"<code>{prefix}tagall [message]</code> · quote-style mentions for up to 150 recently active members\n"
-            f"<code>{prefix}tagcancel</code> · stop the active TagAll process\n"
+            f"<code>{prefix}dashboard</code> · open premium control center\n"
+            f"<code>{prefix}tagrefresh</code> · scan and save visible group members\n"
+            f"<code>{prefix}tagall [message]</code> · mention indexed group members (admin only)\n"
+            f"<code>{prefix}taglist</code> · show saved/opted-out counts\n"
+            f"<code>{prefix}tagjoin / {prefix}tagleave</code> · opt in/out of mentions\n"
+            f"<code>{prefix}tagstop</code> · stop the active TagAll process\n"
+            f"<code>{prefix}tagclear</code> · clear current group member index\n"
             f"<code>{prefix}addraid msg1 | msg2</code> · save message rotation\n"
             f"<code>{prefix}raid 5</code> · send up to 10 saved messages\n"
             f"<code>{prefix}clearraid</code> · clear saved messages\n\n"
@@ -90,7 +112,10 @@ def setup(client):
             f"<code>{prefix}unafk</code> · turn AFK off\n"
             f"<code>{prefix}promo on</code> · enable auto-drop\n"
             f"<code>{prefix}promo off</code> · pause auto-drop\n"
-            f"<code>{prefix}promo status</code> · view status/channel\n\n"
+            f"<code>{prefix}promo status</code> · view status/channel\n"
+            f"<code>{prefix}promo set/add/remove/time/test</code> · configure/test promo\n"
+            f"<code>{prefix}dmtrap on/off/set/status</code> · configure DM auto-reply\n"
+            f"<code>{prefix}dmtrap cooldown/reset</code> · DM reply timing/defaults\n\n"
             "<b>🗂 NOTES, AUTO-REPLY & FILTERS</b>\n"
             f"<code>{prefix}note name | text</code> · save note\n"
             f"<code>{prefix}getnote name</code> · read note\n"
@@ -101,10 +126,7 @@ def setup(client):
             f"<code>{prefix}replies</code> · list auto-replies\n"
             f"<code>{prefix}filter word | reply</code> · add current-chat filter\n"
             f"<code>{prefix}stop word</code> · remove filter\n"
-            f"<code>{prefix}filters</code> · list current-chat filters\n"
-            f"<code>{prefix}tagadd word | reply</code> · create a Smart Tag\n"
-            f"<code>{prefix}tagdel word</code> · remove a Smart Tag\n"
-            f"<code>{prefix}tags</code> · list Smart Tags in this chat\n\n"
+            f"<code>{prefix}filters</code> · list current-chat filters\n\n"
             "<b>⚒ GROUP ADMIN</b>\n"
             f"<code>{prefix}adminhelp</code> · admin-only command guide\n\n"
             "<b>✦ AI</b>\n"
@@ -168,50 +190,130 @@ def setup(client):
         else:
             await e.edit("No active rotation in this chat.")
 
-    # Kittu-style active-member tracking: keep each connected account and group separate.
-    # Only lightweight public profile fields are stored; message contents are never saved.
-    tagall_members = database.db.zyra_tagall_members
+    # Group-wise participant index. New chatters are saved automatically;
+    # .tagrefresh can also index all participants Telegram exposes to this account.
+    tagall_members = database.db.zyra_tagall_member_entries
     tagall_running = {}
-    TAGALL_MEMBER_LIMIT = 150
-    TAGALL_DELAY_SECONDS = 2.5
+    tagall_runs = database.db.zyra_tagall_runs
+    TAGALL_MEMBER_LIMIT = _env_int("TAGALL_MAX_MEMBERS", 5000, 50, 10000)
+    TAGALL_BATCH_SIZE = _env_int("TAGALL_BATCH_SIZE", 8, 3, 10)
+    TAGALL_DELAY_SECONDS = _env_float("TAGALL_DELAY_SECONDS", 3.0, 2.0, 30.0)
+    TAGALL_COOLDOWN_SECONDS = _env_int("TAGALL_COOLDOWN", 3600, 1800, 604800)
+
+    async def save_tag_member(chat_id, sender):
+        if not sender or not getattr(sender, "id", None):
+            return
+        if getattr(sender, "bot", False) or getattr(sender, "deleted", False):
+            return
+        await tagall_members.update_one(
+            {"uid": uid, "chat_id": int(chat_id), "user_id": int(sender.id)},
+            {"$set": {
+                "name": (getattr(sender, "first_name", None) or getattr(sender, "title", None) or "Member")[:80],
+                "username": getattr(sender, "username", None) or "",
+                "seen_at": time.time(),
+                "is_bot": False,
+            }, "$setOnInsert": {"opted_out": False}},
+            upsert=True,
+        )
 
     @client.on(events.NewMessage(incoming=True))
     async def track_tagall_active_member(event):
         if not event.is_group or not event.sender_id or event.sender_id == uid:
             return
         try:
-            sender = await event.get_sender()
-            if not sender or getattr(sender, "bot", False) or getattr(sender, "deleted", False):
-                return
-            member_info = {
-                "id": sender.id,
-                "name": getattr(sender, "first_name", None) or "Member",
-                "username": getattr(sender, "username", None) or "",
-                "last_seen": time.time(),
-            }
-            # Same bounded recent-member strategy as KittuBot: max 150 per group.
-            await tagall_members.update_one(
-                {"uid": uid, "chat_id": event.chat_id},
-                {"$pull": {"active_members": {"id": sender.id}}},
-                upsert=True,
-            )
-            await tagall_members.update_one(
-                {"uid": uid, "chat_id": event.chat_id},
-                {"$push": {"active_members": {"$each": [member_info], "$slice": -TAGALL_MEMBER_LIMIT}}},
-            )
+            await save_tag_member(event.chat_id, await event.get_sender())
         except Exception:
-            # Tracking is best-effort and must never interrupt normal message handling.
+            # Indexing is best-effort and must never interrupt normal message handling.
             return
 
     async def _tagall_is_group_admin(chat_id):
         try:
             permissions = await client.get_permissions(chat_id, uid)
-            return bool(
-                getattr(permissions, "is_admin", False)
-                or getattr(permissions, "is_creator", False)
-            )
+            return bool(getattr(permissions, "is_admin", False) or getattr(permissions, "is_creator", False))
         except Exception:
             return False
+
+    async def refresh_group_members(chat_id, status=None):
+        """Index all participants visible through Telegram's participant API."""
+        scanned = saved = skipped = 0
+        async for participant in client.iter_participants(chat_id, limit=TAGALL_MEMBER_LIMIT):
+            scanned += 1
+            if getattr(participant, "bot", False) or getattr(participant, "deleted", False):
+                skipped += 1
+                continue
+            await save_tag_member(chat_id, participant)
+            saved += 1
+            if status and scanned % 200 == 0:
+                try:
+                    await status.edit(
+                        f"🔎 <b>ZYRA MEMBER SCAN</b>\n\n"
+                        f"Scanned: <b>{scanned}</b>\nSaved: <b>{saved}</b>\n"
+                        f"Skipped bots/deleted: <b>{skipped}</b>", parse_mode="html"
+                    )
+                except Exception:
+                    pass
+        return scanned, saved, skipped
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"tagrefresh$", outgoing=True))
+    async def tagall_refresh(e):
+        if not e.is_group:
+            return await e.edit("This command works only in groups.")
+        if not await _tagall_is_group_admin(e.chat_id):
+            return await e.edit("⛔ <b>Admin-only.</b> Connected account must be a group admin.")
+        status = await e.edit("🔎 <b>ZYRA MEMBER SCAN</b>\nTelegram se visible group members search ho rahe hain…")
+        try:
+            scanned, saved, skipped = await refresh_group_members(e.chat_id, status)
+            await status.edit(
+                "✅ <b>MEMBER SCAN COMPLETE</b>\n\n"
+                f"• Scanned: <b>{scanned}</b>\n• Saved/updated: <b>{saved}</b>\n"
+                f"• Skipped: <b>{skipped}</b>\n\n"
+                f"Use <code>{client.prefix}tagall your message</code> to mention indexed members.",
+                parse_mode="html",
+            )
+        except Exception as ex:
+            await status.edit("⚠️ <b>Member scan failed.</b> Telegram may restrict participant access.\n<code>%s</code>" % html.escape(str(ex)[:220]), parse_mode="html")
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"taglist$", outgoing=True))
+    async def tagall_list(e):
+        if not e.is_group:
+            return await e.edit("Use this command inside a group.")
+        total = await tagall_members.count_documents({"uid": uid, "chat_id": int(e.chat_id)})
+        excluded = await tagall_members.count_documents({"uid": uid, "chat_id": int(e.chat_id), "opted_out": True})
+        await e.edit(f"✦ <b>ZYRA TAG INDEX</b>\nSaved members: <b>{total}</b>\nOpted out: <b>{excluded}</b>\nEligible: <b>{max(0, total-excluded)}</b>", parse_mode="html")
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"tagclear$", outgoing=True))
+    async def tagall_clear(e):
+        if not e.is_group or not await _tagall_is_group_admin(e.chat_id):
+            return await e.edit("⛔ Group admin only.")
+        result = await tagall_members.delete_many({"uid": uid, "chat_id": int(e.chat_id)})
+        await e.edit(f"🧹 Cleared <b>{result.deleted_count}</b> saved member records for this group.", parse_mode="html")
+
+    # Any group member can opt out/in by sending the command in that group.
+    @client.on(events.NewMessage(pattern=r"^" + p + r"tagleave$"))
+    async def tagall_optout(e):
+        if not e.is_group or not e.sender_id:
+            return
+        await tagall_members.update_one(
+            {"uid": uid, "chat_id": int(e.chat_id), "user_id": int(e.sender_id)},
+            {"$set": {"opted_out": True}}, upsert=True,
+        )
+        if e.out:
+            await e.edit("You are excluded from future ZYRA TagAll mentions.")
+        else:
+            await e.reply("You are excluded from future ZYRA TagAll mentions.")
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"tagjoin$"))
+    async def tagall_optin(e):
+        if not e.is_group or not e.sender_id:
+            return
+        await tagall_members.update_one(
+            {"uid": uid, "chat_id": int(e.chat_id), "user_id": int(e.sender_id)},
+            {"$set": {"opted_out": False, "seen_at": time.time()}}, upsert=True,
+        )
+        if e.out:
+            await e.edit("You are included in future ZYRA TagAll mentions.")
+        else:
+            await e.reply("You are included in future ZYRA TagAll mentions.")
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"tagall(?:\s+([\s\S]+))?$", outgoing=True))
     async def tagall(e):
@@ -219,90 +321,91 @@ def setup(client):
             return await e.edit("This command works only in groups.")
         if not await _tagall_is_group_admin(e.chat_id):
             return await e.edit("⛔ <b>Admin-only command.</b> Your connected account must be a group admin.")
-
-        key = (uid, e.chat_id)
+        key = (uid, int(e.chat_id))
         if key in tagall_running:
-            return await e.edit("A TagAll process is already running here. Use <code>%stagcancel</code> to stop it." % client.prefix)
+            return await e.edit(f"A TagAll process is already running. Use <code>{client.prefix}tagstop</code>.")
+        last_run = await tagall_runs.find_one({"uid": uid, "chat_id": int(e.chat_id)})
+        remaining = TAGALL_COOLDOWN_SECONDS - (time.time() - float((last_run or {}).get("last_started", 0)))
+        if remaining > 0:
+            return await e.edit(f"⏳ TagAll cooldown active. Try again in <b>{int(remaining//60)+1} min</b>.", parse_mode="html")
 
-        custom = (e.pattern_match.group(1) or "").strip()
+        custom = (e.pattern_match.group(1) or "").strip()[:500]
         if not custom:
-            custom = "👋 Everyone, please check this group announcement!"
-        custom = custom[:700]
-
-        member_doc = await tagall_members.find_one({"uid": uid, "chat_id": e.chat_id})
-        members = (member_doc or {}).get("active_members", [])
-        members = sorted(members, key=lambda item: item.get("last_seen", 0), reverse=True)[:TAGALL_MEMBER_LIMIT]
-        if not members:
-            return await e.edit(
-                "No recently active members are recorded yet. Members will be added as they send messages; try TagAll later."
-            )
-
+            custom = "👋 Group announcement — please check this message."
+        status = await e.edit("🔎 <b>ZYRA TAGALL</b>\nRefreshing group member list…")
         stop_event = asyncio.Event()
         tagall_running[key] = stop_event
         try:
-            await e.delete()
-            status = await client.send_message(
-                e.chat_id,
-                "📢 <b>TagAll started</b>\n"
-                f"Tracking <b>{len(members)}</b> recently active members (maximum {TAGALL_MEMBER_LIMIT}).\n"
-                f"One quoted message per member. Use <code>{html.escape(client.prefix)}tagcancel</code> to stop.",
-                parse_mode="html",
+            try:
+                scanned, saved, skipped = await refresh_group_members(e.chat_id, status)
+            except Exception as ex:
+                await status.edit("⚠️ Could not search all group members.\n<code>%s</code>\nWill use members already indexed from group activity." % html.escape(str(ex)[:180]), parse_mode="html")
+            cursor = tagall_members.find({"uid": uid, "chat_id": int(e.chat_id), "opted_out": {"$ne": True}}).sort("seen_at", -1).limit(TAGALL_MEMBER_LIMIT)
+            members = await cursor.to_list(length=TAGALL_MEMBER_LIMIT)
+            if not members:
+                return await status.edit("No eligible members found. Try <code>%stagrefresh</code>." % client.prefix, parse_mode="html")
+            await tagall_runs.update_one({"uid": uid, "chat_id": int(e.chat_id)}, {"$set": {"last_started": time.time(), "member_count": len(members)}}, upsert=True)
+            await status.edit(
+                "📣 <b>ZYRA TAGALL STARTED</b>\n"
+                f"Eligible members: <b>{len(members)}</b>\n"
+                f"Batch size: <b>{TAGALL_BATCH_SIZE}</b>\n"
+                f"Stop: <code>{client.prefix}tagstop</code>", parse_mode="html"
             )
-            sent = 0
-            failed = 0
-            for index, member in enumerate(members, start=1):
+            sent_batches = failed_batches = 0
+            for offset in range(0, len(members), TAGALL_BATCH_SIZE):
                 if stop_event.is_set():
                     break
-                member_id = member.get("id")
-                if not member_id:
-                    failed += 1
+                batch = members[offset:offset + TAGALL_BATCH_SIZE]
+                mentions = []
+                for member in batch:
+                    member_id = int(member.get("user_id", 0) or 0)
+                    if not member_id:
+                        continue
+                    display = html.escape((member.get("name") or "Member")[:64])
+                    mentions.append(f'<a href="tg://user?id={member_id}">{display}</a>')
+                if not mentions:
                     continue
-                display = html.escape((member.get("name") or "Member")[:64])
-                mention = f'<a href="tg://user?id={int(member_id)}">{display}</a>'
-                # Each outgoing message contains exactly one mention, in quote style.
-                payload = f"<blockquote>{html.escape(custom)}</blockquote>\n{mention}"
+                payload = f"<b>{html.escape(custom)}</b>\n" + " · ".join(mentions)
                 try:
                     await client.send_message(e.chat_id, payload, parse_mode="html", link_preview=False)
-                    sent += 1
+                    sent_batches += 1
                 except Exception as ex:
-                    # Respect Telegram FloodWait and retry this single mention once.
                     wait_seconds = getattr(ex, "seconds", None)
                     if wait_seconds is not None:
+                        await status.edit(f"⏳ Telegram rate limit — waiting {int(wait_seconds)} seconds.\nSent batches: {sent_batches}", parse_mode="html")
+                        await asyncio.sleep(max(1, int(wait_seconds) + 1))
+                        if stop_event.is_set():
+                            break
                         try:
-                            await status.edit(
-                                f"⏳ <b>Telegram rate limit</b>\nWaiting {int(wait_seconds)} seconds before continuing…",
-                                parse_mode="html",
-                            )
-                            await asyncio.sleep(max(1, int(wait_seconds) + 1))
-                            if stop_event.is_set():
-                                break
                             await client.send_message(e.chat_id, payload, parse_mode="html", link_preview=False)
-                            sent += 1
+                            sent_batches += 1
                         except Exception:
-                            failed += 1
+                            failed_batches += 1
                     else:
-                        failed += 1
-                if index < len(members) and not stop_event.is_set():
+                        failed_batches += 1
+                if (offset // TAGALL_BATCH_SIZE + 1) % 10 == 0:
+                    try:
+                        await status.edit(
+                            f"📣 <b>ZYRA TAGALL RUNNING</b>\n"
+                            f"Progress: <b>{min(100, int((offset+len(batch))*100/len(members)))}%</b>\n"
+                            f"Batches sent: <b>{sent_batches}</b> · Failed: <b>{failed_batches}</b>\n"
+                            f"Use <code>{client.prefix}tagstop</code> to stop.", parse_mode="html"
+                        )
+                    except Exception:
+                        pass
+                if offset + TAGALL_BATCH_SIZE < len(members) and not stop_event.is_set():
                     await asyncio.sleep(TAGALL_DELAY_SECONDS)
-
-            result = "🛑 <b>TagAll stopped.</b>" if stop_event.is_set() else "✅ <b>TagAll completed.</b>"
-            await status.edit(
-                f"{result}\n\n"
-                f"• Mentions sent: <b>{sent}</b>\n"
-                f"• Failed: <b>{failed}</b>\n"
-                f"• Active-member list: <b>{len(members)}</b>",
-                parse_mode="html",
-            )
+            result = "🛑 <b>TAGALL STOPPED</b>" if stop_event.is_set() else "✅ <b>TAGALL COMPLETED</b>"
+            await status.edit(f"{result}\n\nMembers indexed: <b>{len(members)}</b>\nMessages sent: <b>{sent_batches}</b>\nFailed batches: <b>{failed_batches}</b>", parse_mode="html")
         finally:
             tagall_running.pop(key, None)
 
-    @client.on(events.NewMessage(pattern=r"^" + p + r"tagcancel$", outgoing=True))
+    @client.on(events.NewMessage(pattern=r"^" + p + r"(?:tagstop|tagcancel)$", outgoing=True))
     async def tagall_cancel(e):
-        key = (uid, e.chat_id)
-        running = tagall_running.get(key)
+        running = tagall_running.get((uid, int(e.chat_id)))
         if running:
             running.set()
-            await e.edit("🛑 <b>TagAll cancellation requested.</b>")
+            await e.edit("🛑 <b>ZYRA TagAll stop requested.</b>")
         else:
             await e.edit("No TagAll process is running in this group.")
 
@@ -440,26 +543,13 @@ def setup(client):
                 await e.reply(doc["response"])
             except Exception:
                 pass
-        # Per-chat filters / Smart Tags respond to a matching keyword.
+        # Per-chat filters respond when a trigger appears in a message.
         async for f in filters.find({"uid": uid, "chat_id": e.chat_id}):
-            if f.get("trigger") and f["trigger"].casefold() in text.casefold():
-                cooldown_key = (int(e.chat_id), f["trigger"])
-                now = time.monotonic()
-                if now - smart_tag_cooldowns.get(cooldown_key, 0) < 15:
-                    break
-                smart_tag_cooldowns[cooldown_key] = now
+            if f["trigger"].casefold() in text.casefold():
                 try:
-                    if f.get("media_chat_id") and f.get("media_message_id"):
-                        media_msg = await client.get_messages(f["media_chat_id"], ids=f["media_message_id"])
-                        if media_msg and media_msg.media:
-                            await client.send_file(e.chat_id, media_msg.media, caption=f.get("response") or None)
-                        elif f.get("response"):
-                            await e.reply(f["response"])
-                    elif f.get("response"):
-                        await e.reply(f["response"])
+                    await e.reply(f["response"])
                 except Exception:
                     pass
-                break
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"note\s+([^|]+?)\s*\|\s*(.+)$", outgoing=True))
     async def save_note(e):
@@ -512,46 +602,6 @@ def setup(client):
         trigger = e.pattern_match.group(1).strip().casefold()
         res = await filters.delete_one({"uid": uid, "chat_id": e.chat_id, "trigger": trigger})
         await e.edit("Filter removed." if res.deleted_count else "Filter not found.")
-
-    # Lisa-style Smart Tags: keyword-to-reply rules scoped to the current chat.
-    # Existing filter rules remain compatible and continue to work.
-    @client.on(events.NewMessage(pattern=r"^" + p + r"tagadd\s+([^|]+?)(?:\s*\|\s*(.+))?$", outgoing=True))
-    async def smart_tag_add(e):
-        trigger = e.pattern_match.group(1).strip()
-        response = (e.pattern_match.group(2) or "").strip()
-        media_chat_id = media_message_id = None
-        if not response and e.is_reply:
-            replied = await e.get_reply_message()
-            if replied and replied.media:
-                media_chat_id, media_message_id = int(e.chat_id), int(replied.id)
-        if not trigger or len(trigger) > 64 or len(response) > 1500:
-            return await e.edit("Tag limit: keyword 1–64 chars, reply up to 1500 chars.")
-        if not response and not media_message_id:
-            return await e.edit("Use <code>%stagadd keyword | reply</code> or reply to media with <code>%stagadd keyword</code>." % client.prefix)
-        await filters.update_one(
-            {"uid": uid, "chat_id": e.chat_id, "trigger": trigger.casefold()},
-            {"$set": {
-                "trigger": trigger.casefold(), "response": response, "kind": "smart_tag",
-                "media_chat_id": media_chat_id, "media_message_id": media_message_id,
-            }},
-            upsert=True,
-        )
-        kind = "media" if media_message_id else "text"
-        await e.edit("🖤 <b>Smart Tag saved</b>\nKeyword: <code>%s</code>\nReply type: <b>%s</b> · active in this chat." % (html.escape(trigger), kind))
-
-    @client.on(events.NewMessage(pattern=r"^" + p + r"tagdel\s+(.+)$", outgoing=True))
-    async def smart_tag_delete(e):
-        trigger = e.pattern_match.group(1).strip().casefold()
-        res = await filters.delete_one({"uid": uid, "chat_id": e.chat_id, "trigger": trigger})
-        await e.edit("🗑 Smart Tag removed." if res.deleted_count else "Smart Tag not found.")
-
-    @client.on(events.NewMessage(pattern=r"^" + p + r"tags$", outgoing=True))
-    async def smart_tag_list(e):
-        items = await filters.find({"uid": uid, "chat_id": e.chat_id}).to_list(length=50)
-        if not items:
-            return await e.edit("🖤 No Smart Tags in this chat.\\nUse <code>%stagadd hello | Hey!</code>" % client.prefix)
-        rows = [f"• <code>{html.escape(item.get('trigger', ''))}</code>" for item in items]
-        await e.edit("🖤 <b>ZYRA SMART TAGS</b>\\n" + "\\n".join(rows))
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"filters$", outgoing=True))
     async def list_filters(e):

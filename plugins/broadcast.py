@@ -1,14 +1,13 @@
-"""Zyra Promotion Studio + opt-in broadcast.
+"""ZYRA Promotion Studio with opt-in destinations and user-account-safe URL links.
 
-Commands: .promotion (or .broadcast) opens a guided composer.
-Groups opt in with .broadcast here / leave. DM recipients opt in with
-.broadcast subscribe / unsubscribe. Delivery is limited to opted-in targets.
+Telethon inline keyboards are bot-only, so this userbot publishes clickable HTML
+links instead. Publish/cancel are controlled with commands rather than callbacks.
 """
 import asyncio
 import html
 import logging
 import re
-from telethon import Button, events
+from telethon import events
 from telethon.errors import FloodWaitError, ChatWriteForbiddenError, UserIsBlockedError
 
 log = logging.getLogger(__name__)
@@ -17,22 +16,14 @@ URL_RE = re.compile(r"^\s*(.{1,64}?)\s*\|\s*(https?://\S+)\s*$", re.I)
 
 def setup(client):
     prefix = re.escape(client.prefix)
-    uid = client.uid
+    uid = int(client.uid)
     collection = __import__("db").db.zyra_broadcast_subscriptions
-    sessions = {}  # chat_id -> current wizard state
-    pending = {}   # chat_id -> ready-to-publish draft
+    sessions = {}
+    pending = {}
     running = {"task": None, "stop": False}
 
-    async def say(chat_id, text, buttons=None):
-        return await client.send_message(chat_id, text, buttons=buttons, parse_mode="html", link_preview=False)
-
-    async def begin(chat_id):
-        sessions[int(chat_id)] = {"step": "media", "media_chat": None, "media_id": None, "caption": "", "buttons": []}
-        await say(chat_id,
-            "✦ <b>ZYRA PROMOTION STUDIO</b> ✦\n━━━━━━━━━━━━━━━━━━\n"
-            "Let's create your post.\n\n<b>Step 1/3 · Media</b>\n"
-            "Photo/video bhejo, ya media nahi chahiye to <code>/skip</code> bhejo.\n\n"
-            "<i>Cancel karne ke liye /cancel</i>")
+    async def say(chat_id, text):
+        return await client.send_message(chat_id, text, parse_mode="html", link_preview=False)
 
     async def send_status(e, text):
         try:
@@ -40,24 +31,35 @@ def setup(client):
         except Exception:
             pass
 
-    def make_button_rows(items):
-        return [[Button.url(label, url)] for label, url in items] or None
+    def render_links(items):
+        links = []
+        for label, url in items[:8]:
+            links.append(f'<a href="{html.escape(url, quote=True)}">{html.escape(label)}</a>')
+        return "\n\n" + "  ·  ".join(links) if links else ""
+
+    async def begin(chat_id):
+        sessions[int(chat_id)] = {"step": "media", "media_chat": None, "media_id": None, "caption": "", "links": []}
+        await say(chat_id,
+            "✦ <b>ZYRA PROMOTION STUDIO</b> ✦\n━━━━━━━━━━━━━━━━━━\n"
+            "Let's create your post.\n\n<b>Step 1/3 · Media</b>\n"
+            "Photo/video bhejo, ya media nahi chahiye to <code>/skip</code>.\n\n"
+            "Cancel: <code>/cancel</code>")
 
     async def preview(chat_id, draft):
-        # Keep the real draft so command-based publishing works even if Telegram
-        # does not render the inline callback buttons on the preview controls.
         pending[int(chat_id)] = draft
         source = None
         if draft.get("media_id"):
             source = await client.get_messages(draft["media_chat"], ids=draft["media_id"])
-        caption = draft.get("caption", "")
-        buttons = make_button_rows(draft.get("buttons", []))
+        caption = (draft.get("caption", "") or "") + render_links(draft.get("links", []))
         if source and source.media:
-            preview_msg = await client.send_file(chat_id, source.media, caption=caption or None, buttons=buttons)
+            await client.send_file(chat_id, source.media, caption=caption or None, parse_mode="html")
         else:
-            preview_msg = await client.send_message(chat_id, caption or "<i>(No text)</i>", buttons=buttons, parse_mode="html", link_preview=False)
-        controls = [[Button.inline("✅ Done · Publish", data=f"zyrapub:{preview_msg.id}"), Button.inline("✖ Cancel", data=f"zyracancel:{preview_msg.id}")]]
-        await say(chat_id, "<b>Preview ready.</b> Publish this post to opted-in DMs and groups?", buttons=controls)
+            await say(chat_id, caption or "<i>(No text)</i>")
+        await say(chat_id,
+            "<b>Preview ready.</b>\n\n"
+            f"Publish: <code>{client.prefix}promotion publish</code>\n"
+            f"Cancel: <code>{client.prefix}promotion cancel</code>\n"
+            f"Status: <code>{client.prefix}promotion status</code>")
 
     async def deliver(draft, status_message):
         destinations = []
@@ -69,12 +71,10 @@ def setup(client):
             except Exception:
                 pass
             return
-
         source = None
         if draft.get("media_id"):
             source = await client.get_messages(draft["media_chat"], ids=draft["media_id"])
-        caption = draft.get("caption", "")
-        buttons = make_button_rows(draft.get("buttons", []))
+        caption = (draft.get("caption", "") or "") + render_links(draft.get("links", []))
         sent = failed = 0
         running["stop"] = False
         stopped = False
@@ -86,17 +86,17 @@ def setup(client):
                 target = int(dest["target_id"])
                 try:
                     if source and source.media:
-                        await client.send_file(target, source.media, caption=caption or None, buttons=buttons)
+                        await client.send_file(target, source.media, caption=caption or None, parse_mode="html")
                     else:
-                        await client.send_message(target, caption, buttons=buttons, link_preview=False, parse_mode="html")
+                        await client.send_message(target, caption or "<i>(No text)</i>", parse_mode="html", link_preview=False)
                     sent += 1
                 except FloodWaitError as ex:
-                    await asyncio.sleep(ex.seconds)
+                    await asyncio.sleep(ex.seconds + 1)
                     try:
                         if source and source.media:
-                            await client.send_file(target, source.media, caption=caption or None, buttons=buttons)
+                            await client.send_file(target, source.media, caption=caption or None, parse_mode="html")
                         else:
-                            await client.send_message(target, caption, buttons=buttons, link_preview=False, parse_mode="html")
+                            await client.send_message(target, caption or "<i>(No text)</i>", parse_mode="html", link_preview=False)
                         sent += 1
                     except Exception:
                         failed += 1
@@ -113,8 +113,7 @@ def setup(client):
                 await status_message.edit(
                     "✦ <b>ZYRA PROMOTION REPORT</b> ✦\n━━━━━━━━━━━━━━━━━━\n"
                     f"✅ Sent: <code>{sent}</code>\n❌ Failed: <code>{failed}</code>\n"
-                    f"{'🛑 Stopped' if stopped else '🏁 Finished'}\n━━━━━━━━━━━━━━━━━━",
-                    parse_mode="html")
+                    f"{'🛑 Stopped' if stopped else '🏁 Finished'}\n━━━━━━━━━━━━━━━━━━", parse_mode="html")
             except Exception:
                 pass
 
@@ -128,37 +127,37 @@ def setup(client):
         tail = (match.group(2) or "").strip()
         parts = tail.split(None, 1)
         action = parts[0].lower() if parts else ""
-        value = parts[1].strip() if len(parts) > 1 else ""
 
         if root == "broadcast" and action in ("here", "leave", "subscribe", "unsubscribe", "status", "stop", "help"):
             if action == "here":
                 if not e.is_group:
                     return await send_status(e, "⚠️ <code>.broadcast here</code> group ke andar use karo.")
                 await collection.update_one({"uid": uid, "kind": "group", "target_id": int(e.chat_id)}, {"$set": {"title": getattr(e.chat, "title", None) or str(e.chat_id)}}, upsert=True)
-                return await send_status(e, "✅ This group has opted in to Zyra promotions. Remove with <code>.broadcast leave</code>.")
+                return await send_status(e, "✅ This group has opted in to Zyra broadcasts. Remove with <code>.broadcast leave</code>.")
             if action == "leave":
                 if not e.is_group:
                     return await send_status(e, "⚠️ Is command ko target group mein use karo.")
                 await collection.delete_one({"uid": uid, "kind": "group", "target_id": int(e.chat_id)})
-                return await send_status(e, "✅ This group has been removed from promotion delivery.")
+                return await send_status(e, "✅ This group has been removed from broadcast delivery.")
             if action == "subscribe":
                 if not e.is_private:
                     return await send_status(e, "DM mein <code>.broadcast subscribe</code> bhejo.")
                 await collection.update_one({"uid": uid, "kind": "dm", "target_id": int(e.sender_id)}, {"$set": {"title": "Telegram user"}}, upsert=True)
-                return await send_status(e, "💜 Subscribed to Zyra updates. Stop anytime with <code>.broadcast unsubscribe</code>.")
+                return await send_status(e, "💜 Subscribed to Zyra updates. Stop with <code>.broadcast unsubscribe</code>.")
             if action == "unsubscribe":
                 await collection.delete_one({"uid": uid, "kind": "dm", "target_id": int(e.sender_id)})
                 return await send_status(e, "🛑 Unsubscribed from Zyra broadcast updates.")
             if action == "status":
-                groups = await collection.count_documents({"uid": uid, "kind": "group"})
+                groups_count = await collection.count_documents({"uid": uid, "kind": "group"})
                 dms = await collection.count_documents({"uid": uid, "kind": "dm"})
-                return await send_status(e, f"✦ <b>ZYRA PROMOTION STATUS</b> ✦\n👥 Opt-in groups: <code>{groups}</code>\n💌 Opt-in DMs: <code>{dms}</code>\n⚙️ Sending: <code>{'Yes' if running['task'] and not running['task'].done() else 'No'}</code>")
+                active = bool(running["task"] and not running["task"].done())
+                return await send_status(e, f"✦ <b>ZYRA BROADCAST STATUS</b> ✦\n👥 Opt-in groups: <code>{groups_count}</code>\n💌 Opt-in DMs: <code>{dms}</code>\n⚙️ Sending: <code>{'Yes' if active else 'No'}</code>")
             if action == "stop":
                 if running["task"] and not running["task"].done():
                     running["stop"] = True
                     return await send_status(e, "🛑 Stop request sent.")
                 return await send_status(e, "ℹ️ No promotion is running.")
-            return await send_status(e, "✦ <b>ZYRA PROMOTION</b> ✦\n<code>.promotion</code> — create a post\n<code>.broadcast status</code> — status\n<code>.broadcast here/leave</code> — opt a group in/out\n<code>.broadcast subscribe/unsubscribe</code> — DM opt-in/out\n<code>.broadcast stop</code> — stop sending")
+            return await send_status(e, "✦ <b>ZYRA PROMOTION</b> ✦\n<code>.promotion</code> — create a post\n<code>.promotion publish</code> — publish draft\n<code>.broadcast status</code> — status\n<code>.broadcast here/leave</code> — group opt-in/out\n<code>.broadcast subscribe/unsubscribe</code> — DM opt-in/out\n<code>.broadcast stop</code> — stop sending")
 
         if action == "cancel":
             sessions.pop(int(e.chat_id), None)
@@ -167,23 +166,24 @@ def setup(client):
         if root == "promotion" and action == "publish":
             draft = pending.get(int(e.chat_id))
             if not draft:
-                return await send_status(e, "⚠️ Koi ready promotion nahi hai. Pehle <code>.promotion</code> se post banao.")
+                return await send_status(e, "⚠️ No ready draft. Use <code>.promotion</code> first.")
             if running["task"] and not running["task"].done():
-                return await send_status(e, "⏳ Promotion already send ho rahi hai. Finish hone do ya <code>.broadcast stop</code> use karo.")
+                return await send_status(e, "⏳ Promotion already running. Use <code>.broadcast stop</code> if needed.")
             pending.pop(int(e.chat_id), None)
             status = await client.send_message(e.chat_id, "🚀 <b>Promotion started…</b>", parse_mode="html")
             running["task"] = asyncio.create_task(deliver(draft, status))
-            return await send_status(e, "✅ Promotion publish command accept ho gayi.")
+            return await send_status(e, "✅ Promotion publish command accepted.")
         if root == "promotion" and action in ("preview", "status"):
             if action == "status":
-                return await send_status(e, f"Promotion draft: <b>{'Ready to publish' if int(e.chat_id) in pending else 'None'}</b>\nSending: <b>{'Yes' if running['task'] and not running['task'].done() else 'No'}</b>")
+                active = bool(running["task"] and not running["task"].done())
+                return await send_status(e, f"Promotion draft: <b>{'Ready to publish' if int(e.chat_id) in pending else 'None'}</b>\nSending: <b>{'Yes' if active else 'No'}</b>")
             draft = pending.get(int(e.chat_id))
             if not draft:
-                return await send_status(e, "⚠️ Koi ready promotion nahi hai. Pehle <code>.promotion</code> se post banao.")
+                return await send_status(e, "⚠️ No ready draft. Use <code>.promotion</code> first.")
             return await preview(e.chat_id, draft)
         if root == "promotion" or (root == "broadcast" and not action):
             if running["task"] and not running["task"].done():
-                return await send_status(e, "⏳ A promotion is already being sent. Wait for it to finish or use <code>.broadcast stop</code>.")
+                return await send_status(e, "⏳ A promotion is already being sent. Wait or use <code>.broadcast stop</code>.")
             return await begin(e.chat_id)
 
     @client.on(events.NewMessage(outgoing=True))
@@ -210,61 +210,20 @@ def setup(client):
             return await say(chat_id, "<b>Step 2/3 · Message / Caption</b>\nText bhejo, ya blank caption ke liye <code>/skip</code>.")
         if step == "caption":
             draft["caption"] = "" if raw.lower() == "/skip" else raw
-            draft["step"] = "buttons"
-            return await say(chat_id, "<b>Step 3/3 · URL buttons</b>\nButton is format mein bhejo: <code>OWNER | https://t.me/username</code>\nMultiple buttons ek-ek karke bhej sakte ho.\n<code>/done</code> = finish buttons\n<code>/skip</code> = no buttons")
-        if step == "buttons":
-            if raw.lower() == "/skip":
-                draft["buttons"] = []
-                sessions.pop(chat_id, None)
-                return await preview(chat_id, draft)
-            if raw.lower() == "/done":
+            draft["step"] = "links"
+            return await say(chat_id, "<b>Step 3/3 · Clickable URL links</b>\nFormat: <code>OWNER | https://t.me/username</code>\nAdd links one by one. <code>/done</code> = finish, <code>/skip</code> = no links.")
+        if step == "links":
+            if raw.lower() in ("/skip", "/done"):
                 sessions.pop(chat_id, None)
                 return await preview(chat_id, draft)
             found = URL_RE.match(raw)
             if not found:
-                return await say(chat_id, "⚠️ Format sahi rakho: <code>Button Name | https://example.com</code>\nFinish: <code>/done</code> · No buttons: <code>/skip</code>")
+                return await say(chat_id, "⚠️ Format: <code>Link label | https://example.com</code>\nFinish with <code>/done</code> or <code>/skip</code>.")
             label, url = found.group(1).strip(), found.group(2).strip()
-            if len(draft["buttons"]) >= 8:
-                return await say(chat_id, "Maximum 8 buttons allowed. <code>/done</code> bhejo to preview kholun.")
-            draft["buttons"].append((label, url))
-            return await say(chat_id, f"✅ Button added: <b>{html.escape(label)}</b>\nEk aur bhejo, ya <code>/done</code>.")
-
-    @client.on(events.CallbackQuery(pattern=rb"^zyrapub:\d+$"))
-    async def publish_callback(e):
-        try:
-            await e.answer("Publishing…")
-            msg_id = int(e.data.decode().split(":", 1)[1])
-            preview_msg = await client.get_messages(e.chat_id, ids=msg_id)
-            # Prefer the saved draft; reconstruct from the preview only as a fallback.
-            draft = pending.pop(int(e.chat_id), None)
-            if not draft:
-                rows = []
-                for row in (getattr(preview_msg, "buttons", None) or []):
-                    for button in row:
-                        if getattr(button, "url", None) and getattr(button, "text", None):
-                            rows.append((str(button.text), str(button.url)))
-                draft = {"media_chat": int(e.chat_id), "media_id": None, "caption": preview_msg.raw_text or "", "buttons": rows}
-                if preview_msg.media:
-                    draft["media_id"] = int(preview_msg.id)
-            if running["task"] and not running["task"].done():
-                return await e.respond("A promotion is already running.")
-            status = await client.send_message(e.chat_id, "🚀 <b>Promotion started…</b>", parse_mode="html")
-            running["task"] = asyncio.create_task(deliver(draft, status))
-            try:
-                await e.edit("✅ <b>Published to opted-in destinations.</b>", buttons=None, parse_mode="html")
-            except Exception:
-                pass
-        except Exception:
-            log.exception("promotion publish callback failed uid=%s", uid)
-            await e.answer("Publish failed. Check logs.", alert=True)
-
-    @client.on(events.CallbackQuery(pattern=rb"^zyracancel:\d+$"))
-    async def cancel_callback(e):
-        try:
-            await e.answer("Draft cancelled")
-            await e.edit("✖ <b>Promotion cancelled.</b>", buttons=None, parse_mode="html")
-        except Exception:
-            pass
+            if len(draft["links"]) >= 8:
+                return await say(chat_id, "Maximum 8 links allowed. Send <code>/done</code> to preview.")
+            draft["links"].append((label, url))
+            return await say(chat_id, f"✅ Link added: <b>{html.escape(label)}</b>\nEk aur bhejo, ya <code>/done</code>.")
 
     @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
     async def incoming_subscriptions(e):
