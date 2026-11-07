@@ -172,3 +172,14 @@ The welcome MP4 list is hard-coded in `START_VIDEO_URLS` in `main.py`. The bot s
 - DM Trap controls: `.dmtrap on/off/status`, `.dmtrap set TEXT`, `.dmtrap cooldown 3600`, `.dmtrap reset`.
 - `/start` keeps the existing remote `START_VIDEO_URLS` list and no-repeat rotation. The loading animation is reduced to three quick frames; if all remote video delivery fails, the static welcome banner/text is used instead of a local MP4.
 - AI uses `AI_BASE_URL` or the compatibility alias `VENICE_BASE_URL`; default is Venice's OpenAI-compatible API base.
+
+### Auto Sticker Replies
+
+The connected user account can save a Telegram sticker as an exact text-trigger reply:
+
+1. Send the sticker in any chat (Saved Messages is convenient).
+2. Reply to that sticker with `.setsticker hi` (replace `hi` with the trigger).
+3. When an incoming message exactly matches `hi` (case-insensitive), the userbot sends the saved sticker as a reply.
+4. Manage rules with `.stickers`, `.delsticker hi`, and `.sticker on`, `.sticker off`, or `.sticker status`.
+
+Sticker source messages must remain available in Telegram because the userbot retrieves the original sticker message when it sends the reply. Auto sticker replies are enabled by default and have a short per-chat/sender trigger cooldown.
