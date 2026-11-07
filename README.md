@@ -10,7 +10,9 @@ Multi-user Telegram userbot. Har user apna account add karke apne plugins chala 
 | BOT_TOKEN | @BotFather (master bot) |
 | MONGO_URL | MongoDB Atlas M0 (free) |
 | SESSION_KEY | `python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"` |
-| VENICE_API_KEY | https://venice.ai (AI plugin ke liye) |
+| OPENAI_API_KEY | OpenAI API key (private Render environment variable) |
+| OPENAI_BASE_URL | `https://api.openai.com/v1` |
+| AI_MODEL | `gpt-6-luna` |
 
 ## Deploy
 
@@ -171,7 +173,7 @@ The welcome MP4 list is hard-coded in `START_VIDEO_URLS` in `main.py`. The bot s
 - Promo controls: `.promo set TEXT`, `.promo link URL`, `.promo add LABEL | URL`, `.promo remove N`, `.promo list`, `.promo time 12h`, `.promo image` (reply to media), `.promo test`, `.promo status`, `.promo off`. `PROMO_INTERVAL_SECONDS` defaults to 86400 seconds.
 - DM Trap controls: `.dmtrap on/off/status`, `.dmtrap set TEXT`, `.dmtrap cooldown 3600`, `.dmtrap reset`.
 - `/start` keeps the existing remote `START_VIDEO_URLS` list and no-repeat rotation. The loading animation is reduced to three quick frames; if all remote video delivery fails, the static welcome banner/text is used instead of a local MP4.
-- AI uses `AI_BASE_URL` or the compatibility alias `VENICE_BASE_URL`; default is Venice's OpenAI-compatible API base.
+- AI now uses the OpenAI Chat Completions API through `OPENAI_BASE_URL`; voice/audio AI is not included in this build.
 
 ### Auto Sticker Replies
 

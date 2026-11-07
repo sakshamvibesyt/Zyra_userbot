@@ -133,7 +133,7 @@ HELP_TEXT = (
     "Use your prefix (default <code>.</code>) in Telegram.\n"
     "<code>.help</code> · full userbot command list\n"
     "<code>.plugins</code> is available in the bot menu as <code>/plugins</code>.\n\n"
-    "<i>Use the Previous / Next buttons below to browse this guide.</i>\n\n"
+    "<i>Tap a category below for examples and usage.</i>\n\n"
     "<b>OWNER PANEL</b>\n<code>/addadmin user_id</code> · add trusted admin (owner only)\n"
     "<code>/removeadmin user_id</code> · remove trusted admin (owner only)\n"
     "<code>/admins</code> · list panel admins\n"
@@ -218,32 +218,13 @@ def start_buttons():
     ]
 
 
-def help_pages():
-    # Page 1 is the overview; pages 2–6 are the detailed command categories.
-    return [HELP_TEXT, HELP_SECTIONS[b"help_account"], HELP_SECTIONS[b"help_tools"],
-            HELP_SECTIONS[b"help_social"], HELP_SECTIONS[b"help_admin"], HELP_SECTIONS[b"help_ai"]]
-
-
-def help_page_buttons(page):
-    pages = help_pages()
-    row = []
-    if page > 0:
-        row.append(Button.inline("‹ 𝐏𝐑𝐄𝐕𝐈𝐎𝐔𝐒", f"help_page:{page - 1}".encode()))
-    if page < len(pages) - 1:
-        row.append(Button.inline("𝐍𝐄𝐗𝐓 ›", f"help_page:{page + 1}".encode()))
-    buttons = [row] if row else []
-    buttons.append([Button.inline("↩ 𝐁𝐀𝐂𝐊 𝐓𝐎 𝐒𝐓𝐀𝐑𝐓", b"back_start")])
-    return buttons
-
-
-def render_help_page(page):
-    pages = help_pages()
-    page = max(0, min(int(page), len(pages) - 1))
-    return (
-        f"<b>✦ 𝐙𝐘𝐑𝐀 · 𝐇𝐄𝐋𝐏 𝐂𝐄𝐍𝐓𝐄𝐑 ✦</b>\n"
-        f"<i>Page {page + 1}/{len(pages)} · Command guide</i>\n\n"
-        f"{pages[page]}"
-    )
+def help_buttons():
+    return [
+        [Button.inline("♙ Account & Settings", b"help_account")],
+        [Button.inline("✧ Text & Utilities", b"help_tools"), Button.inline("♡ Social Tools", b"help_social")],
+        [Button.inline("⚒ Admin Tools", b"help_admin"), Button.inline("✦ AI & Plugins", b"help_ai")],
+        [Button.inline("↩ Back to Start", b"back_start")],
+    ]
 
 
 def section_buttons():
@@ -435,20 +416,7 @@ async def cb_help(e):
         await e.delete()
     except Exception as ex:
         log.warning("Could not delete previous menu before help: %s", ex)
-    await bot.send_message(e.chat_id, render_help_page(0), parse_mode="html", buttons=help_page_buttons(0))
-
-
-@bot.on(events.CallbackQuery(pattern=rb"^help_page:(\d+)$"))
-async def cb_help_page(e):
-    await e.answer()
-    try:
-        page = int(e.pattern_match.group(1))
-        pages = help_pages()
-        if page < 0 or page >= len(pages):
-            return
-        await e.edit(render_help_page(page), parse_mode="html", buttons=help_page_buttons(page), link_preview=False)
-    except Exception:
-        log.exception("Could not change help page")
+    await bot.send_message(e.chat_id, HELP_TEXT, parse_mode="html", buttons=help_buttons())
 
 
 @bot.on(events.CallbackQuery(pattern=rb"^help_(account|tools|social|admin|ai)$"))
@@ -547,7 +515,7 @@ async def cmd_panel(e):
 
 @bot.on(events.NewMessage(pattern=r"^/help$"))
 async def cmd_help(e):
-    await bot.send_message(e.chat_id, render_help_page(0), parse_mode="html", buttons=help_page_buttons(0))
+    await bot.send_message(e.chat_id, HELP_TEXT, parse_mode="html", buttons=help_buttons())
 
 
 @bot.on(events.NewMessage(pattern=r"^/logout$"))

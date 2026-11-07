@@ -18,23 +18,41 @@ services:
         sync: false
       - key: SESSION_KEY
         sync: false
-      - key: VENICE_API_KEY
+      - key: DB_NAME
+        value: userbot
+      - key: OPENAI_API_KEY
         sync: false
+      - key: OPENAI_BASE_URL
+        value: https://api.openai.com/v1
+      - key: AI_MODEL
+        value: gpt-6-luna
       - key: MAX_USERS
         value: "12"
+      - key: PREFIX
+        value: .
       - key: AUTO_PROMO
         value: "false"
+      - key: PROMO_CHANNEL
+        value: ""
+      - key: PROMO_TEXT
+        value: "🔗 {channel}"
+      - key: PROMO_CHANCE
+        value: "0.05"
+      - key: PROMO_COOLDOWN
+        value: "300"
+      - key: PROMO_LINKS
+        value: ""
+      - key: DM_TEXT
+        value: "Hey! Ye channels join kar lo 👇"
+      - key: DM_COOLDOWN
+        value: "3600"
       - key: PROMO_INTERVAL_SECONDS
         value: "86400"
       - key: TAGALL_MAX_MEMBERS
-        value: "5000"
+        value: "50"
       - key: TAGALL_BATCH_SIZE
-        value: "8"
+        value: "1"
       - key: TAGALL_DELAY_SECONDS
-        value: "3"
+        value: "4"
       - key: TAGALL_COOLDOWN
         value: "3600"
-      - key: DM_COOLDOWN
-        value: "3600"
-      - key: AI_BASE_URL
-        value: https://api.venice.ai/api/v1
