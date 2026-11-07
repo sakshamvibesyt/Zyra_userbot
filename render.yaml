@@ -20,12 +20,10 @@ services:
         sync: false
       - key: DB_NAME
         value: userbot
-      - key: OPENAI_API_KEY
+      - key: GEMINI_API_KEY
         sync: false
-      - key: OPENAI_BASE_URL
-        value: https://api.openai.com/v1
-      - key: AI_MODEL
-        value: gpt-6-luna
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash-lite
       - key: MAX_USERS
         value: "12"
       - key: PREFIX
