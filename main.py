@@ -28,19 +28,16 @@ WELCOME_IMAGE = os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.
 WELCOME_ANIMATION = os.environ.get("WELCOME_ANIMATION", os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.mp4")).strip()
 WELCOME_VIDEO_DIR = os.path.join(os.path.dirname(__file__), "assets", "videos")
 WELCOME_VIDEO_BAG = []
-START_ANIMATION_ENABLED = os.environ.get("START_ANIMATION_ENABLED", "false").lower() in ("1", "true", "yes")
 
-
-def available_welcome_videos():
-    """Return bundled MP4 files; local assets work without third-party hosting."""
-    try:
-        return sorted(
-            os.path.join(WELCOME_VIDEO_DIR, name)
-            for name in os.listdir(WELCOME_VIDEO_DIR)
-            if name.lower().endswith(".mp4") and os.path.isfile(os.path.join(WELCOME_VIDEO_DIR, name))
-        )
-    except OSError:
-        return []
+# Direct MP4 URLs used for the /start welcome video rotation.
+START_VIDEO_URLS = [
+    "https://www.image2url.com/r2/default/videos/1793904409822-271da135-72b3-4664-b931-9da3a3edde92.mp4",
+    "https://www.image2url.com/r2/default/videos/1793904536328-a3959414-4662-495a-aade-5eb8cdf7bf74.mp4",
+    "https://www.image2url.com/r2/default/videos/1793904593839-c821c4a8-6be4-4fb7-95c4-5596519c0d4e.mp4",
+    "https://www.image2url.com/r2/default/videos/1793904686803-50ec5d20-2ecc-4e04-be61-2a9645417052.mp4",
+    "https://www.image2url.com/r2/default/videos/1793904805127-9653e795-19be-418f-b7fa-4395b6f74295.mp4",
+]
+START_VIDEO_BAG = []
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -129,6 +126,9 @@ HELP_TEXT = (
     "<code>/status</code> · connection status\n"
     "<code>/logout</code> · disconnect account\n"
     "<code>/prefix .</code> · set command prefix\n\n"
+    "<b>PREMIUM USERBOT</b>\n<code>.dashboard</code> · open ZYRA control center\n"
+    "<code>.tagrefresh</code> · scan visible group members\n<code>.tagall message</code> · admin-only group mentions\n"
+    "<code>.promo on/off</code> · automatic group promo\n<code>.dmtrap set text</code> · custom DM reply\n\n"
     "<b>USERBOT COMMANDS</b>\n"
     "Use your prefix (default <code>.</code>) in Telegram.\n"
     "<code>.help</code> · full userbot command list\n"
@@ -248,58 +248,35 @@ async def load_start_sticker_cache():
 
 
 def pick_welcome_video():
-    """Choose a bundled welcome MP4 without repeating until the cycle is used."""
-    global WELCOME_VIDEO_BAG
-    available = available_welcome_videos()
-    WELCOME_VIDEO_BAG = [path for path in WELCOME_VIDEO_BAG if path in available]
-    if not WELCOME_VIDEO_BAG:
-        WELCOME_VIDEO_BAG = available[:]
-        random.shuffle(WELCOME_VIDEO_BAG)
-    return WELCOME_VIDEO_BAG.pop() if WELCOME_VIDEO_BAG else None
+    """Choose a remote MP4 without repeating until the current URL cycle is used."""
+    global START_VIDEO_BAG
+    available = list(START_VIDEO_URLS)
+    START_VIDEO_BAG = [url for url in START_VIDEO_BAG if url in available]
+    if not START_VIDEO_BAG:
+        START_VIDEO_BAG = available[:]
+        random.shuffle(START_VIDEO_BAG)
+    return START_VIDEO_BAG.pop() if START_VIDEO_BAG else None
 
 
 async def run_start_animation(chat_id):
-    """Play a paced, multi-frame ZYRA engine boot animation in one message."""
-    header = "╭━━━『 ZYRA ENGINE 』━━━╮"
-    footer = "╰━━━━━━━━━━━━━━━━━━━━╯"
-    base = (
-        f"{header}\n\n"
-        "  Initializing ZYRA Core...\n"
-        "  Connecting to Main Server...\n"
-        "  Loading Userbot Modules...\n"
-        "  Encrypting Session...\n"
-        "  Checking System Status..."
-    )
+    """Lightweight boot animation; keep it short so the welcome video appears quickly."""
     frames = [
-        f"{header}\n\n  Initializing ZYRA Core...\n{footer}",
-        f"{header}\n\n  Initializing ZYRA Core...\n  Connecting to Main Server...\n{footer}",
-        f"{header}\n\n  Initializing ZYRA Core...\n  Connecting to Main Server...\n  Loading Userbot Modules...\n{footer}",
-        f"{header}\n\n  Initializing ZYRA Core...\n  Connecting to Main Server...\n  Loading Userbot Modules...\n  Encrypting Session...\n{footer}",
-        f"{base}\n{footer}",
-        f"{base}\n\n  [████░░░░░░░░░░░░] 25%\n{footer}",
-        f"{base}\n\n  [████████░░░░░░░░] 50%\n{footer}",
-        f"{base}\n\n  [████████████░░░░] 75%\n{footer}",
-        f"{base}\n\n  [████████████████] 100%\n\n  ✓ ENGINE INITIALIZED\n{footer}",
-        f"{base}\n\n  [████████████████] 100%\n\n  ✓ ENGINE INITIALIZED\n  ✓ ALL SYSTEMS ONLINE\n\n{footer}",
+        "╭━━━『 𝐙𝐘𝐑𝐀 𝐂𝐎𝐑𝐄 』━━━╮\n\n  ◌ Initializing workspace…\n  [░░░░░░░░░░] 10%\n\n╰━━━━━━━━━━━━━━━━━━━━╯",
+        "╭━━━『 𝐙𝐘𝐑𝐀 𝐂𝐎𝐑𝐄 』━━━╮\n\n  ◉ Connecting services…\n  ◉ Loading modules…\n  [█████░░░░░] 55%\n\n╰━━━━━━━━━━━━━━━━━━━━╯",
+        "╭━━━『 𝐙𝐘𝐑𝐀 𝐂𝐎𝐑𝐄 』━━━╮\n\n  ✓ Core initialized\n  ✓ Workspace ready\n  [██████████] 100%\n\n✦ ALL SYSTEMS READY ✦\n╰━━━━━━━━━━━━━━━━━━━━╯",
     ]
-
-    # The first frame follows the /start reaction. Every later frame edits
-    # this same message so the full boot sequence is visible, not skipped.
     status = await bot.send_message(chat_id, frames[0], parse_mode=None, link_preview=False)
     for frame in frames[1:]:
-        await asyncio.sleep(0.9)
+        await asyncio.sleep(0.28)
         try:
             await status.edit(frame, parse_mode=None, link_preview=False)
         except Exception as ex:
             log.warning("Start animation edit failed: %s", ex)
             break
-
-    # Keep the completed screen briefly, then delete it before sticker/video.
-    await asyncio.sleep(1.1)
     try:
         await status.delete()
     except Exception as ex:
-        log.warning("Could not delete completed start animation: %s", ex)
+        log.warning("Could not delete start animation: %s", ex)
     return status
 
 
@@ -312,9 +289,8 @@ async def send_start_menu(chat_id, reply_to=None, user_name=None):
             user_name = "there"
     welcome_text = build_welcome_text(user_name)
 
-    # Optional boot animation. Disabled by default to keep /start fast.
-    if START_ANIMATION_ENABLED:
-        await run_start_animation(chat_id)
+    # Show the paced engine animation; it deletes itself before sticker/video.
+    await run_start_animation(chat_id)
 
     # Then send the already-saved sticker, followed immediately by the welcome video.
     try:
@@ -325,24 +301,28 @@ async def send_start_menu(chat_id, reply_to=None, user_name=None):
     except Exception as ex:
         log.warning("Start sticker could not be sent: %s", ex)
 
-    video_path = pick_welcome_video()
-    if video_path:
+    video_url = pick_welcome_video()
+    if video_url:
         try:
             await bot.send_file(
-                chat_id, video_path, caption=welcome_text,
+                chat_id, video_url, caption=welcome_text,
                 buttons=start_buttons(), parse_mode="html", reply_to=reply_to,
                 supports_streaming=True,
             )
             return
         except Exception as ex:
-            log.warning("Bundled welcome video send failed; using fallback media: %s", ex)
+            log.warning("Remote welcome video send failed; using fallback media: %s", ex)
 
-    media_path = WELCOME_ANIMATION if WELCOME_ANIMATION and os.path.isfile(WELCOME_ANIMATION) else WELCOME_IMAGE
+    # Remote URL is the primary and only welcome-video source. If it fails, use
+    # the static banner/text fallback; never silently substitute a local MP4.
     try:
-        await bot.send_file(chat_id, media_path, caption=welcome_text, buttons=start_buttons(),
-                            parse_mode="html", reply_to=reply_to)
+        if os.path.isfile(WELCOME_IMAGE):
+            await bot.send_file(chat_id, WELCOME_IMAGE, caption=welcome_text, buttons=start_buttons(),
+                                parse_mode="html", reply_to=reply_to)
+        else:
+            await bot.send_message(chat_id, welcome_text, buttons=start_buttons(), parse_mode="html", reply_to=reply_to)
     except Exception as ex:
-        log.warning("Welcome media could not be sent; using text fallback: %s", ex)
+        log.warning("Welcome fallback could not be sent; using text: %s", ex)
         await bot.send_message(chat_id, welcome_text, buttons=start_buttons(), parse_mode="html", reply_to=reply_to)
 
 

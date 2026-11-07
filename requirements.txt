@@ -1,4 +1,4 @@
-telethon
-aiohttp
-motor
-cryptography
+telethon>=1.40,<2
+aiohttp>=3.9,<4
+motor>=3.6,<4
+cryptography>=42,<47

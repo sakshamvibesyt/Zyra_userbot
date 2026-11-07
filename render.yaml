@@ -22,3 +22,19 @@ services:
         sync: false
       - key: MAX_USERS
         value: "12"
+      - key: AUTO_PROMO
+        value: "false"
+      - key: PROMO_INTERVAL_SECONDS
+        value: "86400"
+      - key: TAGALL_MAX_MEMBERS
+        value: "5000"
+      - key: TAGALL_BATCH_SIZE
+        value: "8"
+      - key: TAGALL_DELAY_SECONDS
+        value: "3"
+      - key: TAGALL_COOLDOWN
+        value: "3600"
+      - key: DM_COOLDOWN
+        value: "3600"
+      - key: AI_BASE_URL
+        value: https://api.venice.ai/api/v1

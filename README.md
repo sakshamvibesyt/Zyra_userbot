@@ -57,11 +57,11 @@ Notes, auto-replies and filters are stored in MongoDB. Keep `MONGO_URL` private.
 
 ## Zyra welcome menu
 
-`/start` now attempts a 👋 reaction, optionally sends `START_STICKER_ID`, then displays the bundled `assets/zyra_welcome.png` banner with **Add Account**, **Help**, and **Owner** buttons. The reaction is best-effort because Telegram may restrict reactions in some bot/chat configurations.
+`/start` attempts a 👋 reaction, runs a short three-frame ZYRA loading animation, optionally sends `START_STICKER_ID`, then sends a remote MP4 from the preserved `START_VIDEO_URLS` rotation with **Add Account**, **Help**, Support and Owner buttons. The reaction is best-effort because Telegram may restrict reactions in some bot/chat configurations.
 
 - `OWNER_URL` changes the Owner button destination.
 - `START_STICKER_ID` is optional; set it to a sticker `file_id` to enable the sticker step. Leave it blank to skip the sticker.
-- The welcome banner is `assets/zyra_welcome.png`; replace it with your own banner using the same filename if desired.
+- If Telegram cannot fetch a remote video URL, the static `assets/zyra_welcome.png` banner is used as fallback. The welcome video itself is never replaced with a bundled local MP4.
 
 The Add Account button opens the existing login flow. Never share OTPs or 2-step verification passwords with anyone; only connect an account you own.
 \n\n## Add Account callback fix\n\nThe Add Account inline button now initializes the phone login state and replies with the expected instructions. `/cancel` clears an in-progress login. This still requires deployment and a Telegram test.\n
@@ -114,7 +114,7 @@ Telegram does not provide a reliable signal that your separate Telegram app was 
 
 ## Feature scope
 
-Zyra includes modular plugins, AI (when configured), notes, AFK, auto-replies, profile template backup/restore, and permission-based group moderation. It intentionally does not implement raid/spam automation, mass-add/promote automation, or hidden engagement/view manipulation.
+Zyra includes modular plugins, AI (when configured), notes, AFK, auto-replies, profile template backup/restore, permission-based group moderation, and an admin-triggered paced TagAll. It does not implement mass-add/promote automation or hidden engagement/view manipulation.
 
 
 ## Opt-in broadcast
@@ -123,12 +123,12 @@ The `plugins/broadcast.py` plugin sends a replied-to text/photo/media only to de
 
 - In each group you want to include, send `.broadcast here` from the connected account. Use `.broadcast leave` there to remove it.
 - A person can DM the connected account `.broadcast subscribe`; they can send `.broadcast unsubscribe` at any time.
-- For a photo + caption + URL button, send the photo first, then reply to it with: `.broadcast Your caption || Button label - https://t.me/yourlink`
-- Add multiple URL buttons by separating them with semicolons: `.broadcast Caption || OWNER - https://t.me/owner; ABOUT - https://t.me/about`
-- To copy a source message's existing URL buttons, reply to that message and send `.broadcast` with no extra text.
+- Promotion Studio can include clickable HTML URL links. In the wizard, add links as `Label | https://t.me/yourlink` and finish with `/done`.
+- Publish with `.promotion publish`; cancel with `.promotion cancel`.
+- Telethon inline keyboards are bot-only, so the user-account userbot sends clickable text links and uses commands for preview/publish controls.
 - `.broadcast status` shows destination counts; `.broadcast stop` requests cancellation.
 
-Note: Telegram permissions and client/account limitations can prevent inline buttons from being sent by a user account. Test with one opted-in destination first. This feature only targets subscribed DMs and groups that were explicitly added.
+This feature only targets subscribed DMs and groups that were explicitly added. Test with one opted-in destination first.
 - The sender waits between destinations and respects Telegram FloodWait responses. Delivery can still fail due to permissions, blocks, or Telegram limits.
 
 Keep existing Render environment variables unchanged. The plugin uses the project's existing MongoDB connection.
@@ -146,31 +146,29 @@ Keep existing Render environment variables unchanged. The plugin uses the projec
 
 Example: `𓆩♡𓆪 𝐇𝐞𝐲𝐲 {first_name} 🎀`
 
-Optional DM buttons use `PROMO_LINKS` in `Label|https://example.com` format, separated by commas.
+Optional DM clickable links use `PROMO_LINKS` in `Label|https://example.com` format, separated by commas.
 
 ## Promotion Studio
 
-- `.promotion` — compose media, caption and URL buttons
-- During the wizard, use `/skip` to skip media/caption/buttons and `/done` to finish buttons
-- `.promotion publish` — publish the latest ready draft if the inline publish button is missing
+- `.promotion` — compose media, caption and clickable URL links
+- During the wizard, use `/skip` to skip media/caption/links and `/done` to finish links
+- `.promotion publish` — publish the latest ready draft
 - `.promotion preview` — reopen preview; `.promotion status` — draft/send status; `.promotion cancel` — cancel the draft
 - `.broadcast here` / `.broadcast leave` — opt the current group in/out
 - `.broadcast status` — opted-in destination counts; `.broadcast stop` — stop an active send
 - DM recipients must opt in with `.broadcast subscribe` and can stop with `.broadcast unsubscribe`
 
-KITTUBOT start media URL list is refreshed from `KITTU_CONFIG_URL` every `VIDEO_URL_REFRESH_SECONDS` seconds. If the source URLs are not direct downloadable videos, Zyra falls back to a hidden-link preview and then to local welcome media if preview sending also fails.
-
-## Telegram welcome-video storage channel
-
-Zyra uses the private Telegram channel configured in `main.py` as its welcome-video library. Add the Telegram bot account (the account behind `BOT_TOKEN`) to that channel as an administrator so it can read channel posts. Upload MP4 videos as normal channel posts. On startup Zyra indexes up to the latest 500 video posts and stores only their channel/message references in MongoDB; new video posts are indexed automatically while the service is running. `/start` randomly sends one of the indexed Telegram videos without downloading the file to Render. Keep the channel private and do not delete the video posts that you want to keep available.
-
-If the bot has not joined the channel, the service logs that the storage channel is not accessible and uses the bundled welcome media as a fallback.
+The welcome MP4 list is hard-coded in `START_VIDEO_URLS` in `main.py`. The bot sends those external URLs directly through Telethon, preserving the no-repeat rotation. If Telegram cannot fetch a URL, it falls back to the static welcome banner and then text.
 
 
-## Lisa-inspired Zyra updates
+## ZYRA premium dashboard, TagAll and automatic promo update
 
-- **Smart Tags:** `.tagadd keyword | reply`, `.tags`, `.tagdel keyword` create, list and remove per-chat keyword replies. Existing `.filter` rules remain supported.
-- **Fast welcome media:** `/start` rotates through bundled files in `assets/videos/`; no external MP4 host is required. The long boot animation is off by default. Set `START_ANIMATION_ENABLED=true` to enable it.
-- **AI reliability:** `.ai question` validates the provider response and reports service errors cleanly. AI remains command-triggered; no unsolicited AI replies are enabled.
-
-All automatic promotions and broadcast delivery continue to use their existing opt-in controls.
+- `.dashboard` — open the dark ZYRA text control panel with Auto Promo, DM Trap, Smart Tags and AI command sections. User-account sessions use command navigation because Telegram inline keyboards are bot-only.
+- `.tagrefresh` — scan Telegram-visible group participants and save their public profile IDs group-wise. Telegram privacy/API restrictions can prevent a complete member list.
+- `.tagall [message]` — refresh the member index, then mention eligible indexed members in batches. The connected account must be a group admin. `.taglist` shows saved/opted-out counts; `.tagstop` or `.tagcancel` stops a run; `.tagjoin` / `.tagleave` opt a member in/out; `.tagclear` clears the current group's index. A one-hour default per-group cooldown, batching and FloodWait handling are enabled.
+- `TAGALL_MAX_MEMBERS` defaults to 5000; `TAGALL_BATCH_SIZE` defaults to 8; `TAGALL_DELAY_SECONDS` defaults to 3; `TAGALL_COOLDOWN` defaults to 3600 seconds. Do not use TagAll to harass or repeatedly ping people; respect group rules and member opt-outs.
+- `.promo on` enables promotion for existing groups the connected account belongs to; new active groups are automatically enrolled. Each group gets at most one promo per configured interval (default 24 hours). `.promo group off` excludes a group. Private DM promos remain opt-in with `.promo subscribe` and `.promo unsubscribe`.
+- Promo controls: `.promo set TEXT`, `.promo link URL`, `.promo add LABEL | URL`, `.promo remove N`, `.promo list`, `.promo time 12h`, `.promo image` (reply to media), `.promo test`, `.promo status`, `.promo off`. `PROMO_INTERVAL_SECONDS` defaults to 86400 seconds.
+- DM Trap controls: `.dmtrap on/off/status`, `.dmtrap set TEXT`, `.dmtrap cooldown 3600`, `.dmtrap reset`.
+- `/start` keeps the existing remote `START_VIDEO_URLS` list and no-repeat rotation. The loading animation is reduced to three quick frames; if all remote video delivery fails, the static welcome banner/text is used instead of a local MP4.
+- AI uses `AI_BASE_URL` or the compatibility alias `VENICE_BASE_URL`; default is Venice's OpenAI-compatible API base.
