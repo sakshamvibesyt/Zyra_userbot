@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ZYRA Camera</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#0b0912;color:#f5efff;font:16px system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;padding:18px}
+main{width:min(100%,520px);background:#171222;border:1px solid #493568;border-radius:22px;padding:20px;box-shadow:0 12px 40px #0008}
+h1{margin:0 0 8px;font-size:25px}p{color:#c9bdd8;line-height:1.5}
+video,canvas{width:100%;aspect-ratio:4/3;object-fit:cover;background:#050409;border-radius:14px;margin:12px 0}
+canvas{display:none}button,a{display:inline-block;border:0;border-radius:12px;padding:12px 16px;margin:5px 3px;background:#9b6bdb;color:white;font-weight:700;text-decoration:none;cursor:pointer}
+button.secondary{background:#332744}button:disabled{opacity:.45;cursor:not-allowed}
+.note{font-size:13px;color:#b6a9c8;border-top:1px solid #3b2c4e;padding-top:12px}
+#status{min-height:24px;color:#d6baff}
+</style></head>
+<body><main>
+<h1>📸 ZYRA Camera</h1>
+<p>Camera permission sirf <b>Start Camera</b> dabane par maangi jayegi. Photo sirf is browser page par process hoti hai; server ya Telegram par upload nahi hoti.</p>
+<video id="video" autoplay playsinline muted></video><canvas id="canvas"></canvas>
+<div>
+<button id="start">Start Camera</button><button id="capture" disabled>Capture Photo</button>
+<button id="download" disabled>Download Photo</button><button id="stop" class="secondary" disabled>Stop Camera</button>
+</div><p id="status" role="status"></p>
+<p class="note">Privacy: Zyra photo, IP-based location, ya GPS location collect nahi karta. Download ke baad photo tumhare device par rahegi. Page band karne se camera stream stop ho jayegi.</p>
+</main>
+<script>
+const video=document.getElementById('video'),canvas=document.getElementById('canvas');
+const start=document.getElementById('start'),capture=document.getElementById('capture'),download=document.getElementById('download'),stop=document.getElementById('stop'),status=document.getElementById('status');
+let stream=null,photoReady=false;
+start.onclick=async()=>{try{if(!navigator.mediaDevices?.getUserMedia)throw new Error('Camera HTTPS secure page par hi available hai.');
+stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'},audio:false});video.srcObject=stream;capture.disabled=false;stop.disabled=false;status.textContent='Camera ready. Capture dabao jab tum ready ho.';}catch(e){status.textContent='Camera start nahi hua: '+e.message;}};
+capture.onclick=()=>{if(!stream)return;canvas.width=video.videoWidth;canvas.height=video.videoHeight;canvas.getContext('2d').drawImage(video,0,0);canvas.style.display='block';photoReady=true;download.disabled=false;status.textContent='Photo captured. Download tumhare device par save karega.';};
+download.onclick=()=>{if(!photoReady)return;const a=document.createElement('a');a.href=canvas.toDataURL('image/jpeg',.92);a.download='zyra-camera-photo.jpg';a.click();};
+function stopCamera(){if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}video.srcObject=null;capture.disabled=true;stop.disabled=true;status.textContent='Camera stopped.';}
+stop.onclick=stopCamera;window.addEventListener('pagehide',stopCamera);
+</script></body></html>
