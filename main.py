@@ -28,6 +28,7 @@ WELCOME_IMAGE = os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.
 WELCOME_ANIMATION = os.environ.get("WELCOME_ANIMATION", os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.mp4")).strip()
 WELCOME_VIDEO_DIR = os.path.join(os.path.dirname(__file__), "assets", "videos")
 WELCOME_VIDEO_BAG = []
+CAMERA_PAGE = os.path.join(os.path.dirname(__file__), "assets", "camera.html")
 
 # Direct MP4 URLs used for the /start welcome video rotation.
 START_VIDEO_URLS = [
@@ -88,6 +89,13 @@ async def start_web():
     app = web.Application()
     app.router.add_get("/", health)
     app.router.add_get("/health", health)
+    async def camera_page(request):
+        try:
+            with open(CAMERA_PAGE, "r", encoding="utf-8") as page_file:
+                return web.Response(text=page_file.read(), content_type="text/html")
+        except OSError:
+            return web.Response(text="Camera page is unavailable.", status=503)
+    app.router.add_get("/camera", camera_page)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
@@ -332,6 +340,27 @@ async def send_start_menu(chat_id, reply_to=None, user_name=None):
         log.warning("Welcome fallback could not be sent; using text: %s", ex)
         await bot.send_message(chat_id, welcome_text, buttons=start_buttons(), parse_mode="html", reply_to=reply_to)
 
+
+
+@bot.on(events.NewMessage(pattern=r"^/camera(?:@\w+)?$"))
+async def cmd_camera(e):
+    """Open a local-only camera page; photos are never uploaded to Zyra."""
+    base_url = (os.environ.get("PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL") or "").rstrip("/")
+    if not base_url.startswith(("https://", "http://")):
+        return await e.reply(
+            "📸 <b>ZYRA Camera</b>\n\n"
+            "Camera page ka public URL set nahi hai. Render Environment mein "
+            "<code>PUBLIC_URL</code> ko apne service URL par set karo, phir redeploy karo.",
+            parse_mode="html",
+        )
+    await e.reply(
+        "📸 <b>ZYRA Camera</b>\n\n"
+        "Camera permission sirf tumhare click karne par maangi jayegi. "
+        "Photo browser mein hi rahegi; ZYRA par upload ya save nahi hogi. "
+        "Capture ke baad tum use apne device par download kar sakte ho.",
+        buttons=[[Button.url("📷 OPEN CAMERA", base_url + "/camera")]],
+        parse_mode="html",
+    )
 
 
 @bot.on(events.NewMessage(pattern=r"^/start(?:@\w+)?(?:\s+.*)?$"))
