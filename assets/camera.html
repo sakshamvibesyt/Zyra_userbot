@@ -1,36 +1,4 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ZYRA Camera</title>
-<style>
-*{box-sizing:border-box}body{margin:0;background:#0b0912;color:#f5efff;font:16px system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;padding:18px}
-main{width:min(100%,520px);background:#171222;border:1px solid #493568;border-radius:22px;padding:20px;box-shadow:0 12px 40px #0008}
-h1{margin:0 0 8px;font-size:25px}p{color:#c9bdd8;line-height:1.5}
-video,canvas{width:100%;aspect-ratio:4/3;object-fit:cover;background:#050409;border-radius:14px;margin:12px 0}
-canvas{display:none}button,a{display:inline-block;border:0;border-radius:12px;padding:12px 16px;margin:5px 3px;background:#9b6bdb;color:white;font-weight:700;text-decoration:none;cursor:pointer}
-button.secondary{background:#332744}button:disabled{opacity:.45;cursor:not-allowed}
-.note{font-size:13px;color:#b6a9c8;border-top:1px solid #3b2c4e;padding-top:12px}
-#status{min-height:24px;color:#d6baff}
-</style></head>
-<body><main>
-<h1>📸 ZYRA Camera</h1>
-<p>Camera permission sirf <b>Start Camera</b> dabane par maangi jayegi. Photo sirf is browser page par process hoti hai; server ya Telegram par upload nahi hoti.</p>
-<video id="video" autoplay playsinline muted></video><canvas id="canvas"></canvas>
-<div>
-<button id="start">Start Camera</button><button id="capture" disabled>Capture Photo</button>
-<button id="download" disabled>Download Photo</button><button id="stop" class="secondary" disabled>Stop Camera</button>
-</div><p id="status" role="status"></p>
-<p class="note">Privacy: Zyra photo, IP-based location, ya GPS location collect nahi karta. Download ke baad photo tumhare device par rahegi. Page band karne se camera stream stop ho jayegi.</p>
-</main>
-<script>
-const video=document.getElementById('video'),canvas=document.getElementById('canvas');
-const start=document.getElementById('start'),capture=document.getElementById('capture'),download=document.getElementById('download'),stop=document.getElementById('stop'),status=document.getElementById('status');
-let stream=null,photoReady=false;
-start.onclick=async()=>{try{if(!navigator.mediaDevices?.getUserMedia)throw new Error('Camera HTTPS secure page par hi available hai.');
-stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'},audio:false});video.srcObject=stream;capture.disabled=false;stop.disabled=false;status.textContent='Camera ready. Capture dabao jab tum ready ho.';}catch(e){status.textContent='Camera start nahi hua: '+e.message;}};
-capture.onclick=()=>{if(!stream)return;canvas.width=video.videoWidth;canvas.height=video.videoHeight;canvas.getContext('2d').drawImage(video,0,0);canvas.style.display='block';photoReady=true;download.disabled=false;status.textContent='Photo captured. Download tumhare device par save karega.';};
-download.onclick=()=>{if(!photoReady)return;const a=document.createElement('a');a.href=canvas.toDataURL('image/jpeg',.92);a.download='zyra-camera-photo.jpg';a.click();};
-function stopCamera(){if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}video.srcObject=null;capture.disabled=true;stop.disabled=true;status.textContent='Camera stopped.';}
-stop.onclick=stopCamera;window.addEventListener('pagehide',stopCamera);
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ZYRA Media</title><style>body{margin:0;background:#090a12;color:#f5f2ff;font:16px system-ui;display:grid;place-items:center;min-height:100vh}.card{width:min(92vw,620px);background:#151626;border:1px solid #39334f;border-radius:20px;padding:22px;box-sizing:border-box}h1{margin-top:0;color:#d7b8ff}video,img{width:100%;max-height:55vh;object-fit:contain;background:#05050a;border-radius:14px}button{border:0;border-radius:12px;padding:12px 16px;margin:6px;background:#9b70db;color:white;font-weight:700}button.secondary{background:#343044}p{color:#c9c3d8}.notice{font-size:14px;color:#c5bdd5}</style></head><body><main class="card"><h1>✦ ZYRA MEDIA ✦</h1><p>Shared media</p><div id="shared"></div><hr><h3>Optional camera contribution</h3><p class="notice">Camera permission is optional. Your camera preview stays on this page. Nothing is captured or sent until you press “Capture & Send”.</p><video id="preview" autoplay playsinline muted hidden></video><canvas id="canvas" hidden></canvas><div><button id="start">Allow camera</button><button id="capture" hidden>Capture &amp; Send</button><button id="stop" class="secondary" hidden>Stop camera</button></div><p id="status" class="notice"></p></main><script>
+const id=location.pathname.split('/').pop();const media=document.getElementById('shared');const ext=id.split('.').pop().toLowerCase();const url='/media/'+encodeURIComponent(id);if(['mp4','webm','mov'].includes(ext)){media.innerHTML='<video controls playsinline src="'+url+'"></video>';}else{media.innerHTML='<img alt="Shared photo" src="'+url+'">';}
+let stream=null;const v=document.getElementById('preview'),c=document.getElementById('canvas'),status=document.getElementById('status');document.getElementById('start').onclick=async()=>{try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'},audio:false});v.srcObject=stream;v.hidden=false;document.getElementById('capture').hidden=false;document.getElementById('stop').hidden=false;status.textContent='Camera on. Capture & Send tabhi photo submit karega.';}catch(e){status.textContent='Camera permission nahi mili ya camera available nahi hai.';}};document.getElementById('stop').onclick=()=>{if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;v.hidden=true;document.getElementById('capture').hidden=true;document.getElementById('stop').hidden=true;status.textContent='Camera stopped.';};document.getElementById('capture').onclick=async()=>{if(!stream)return; c.width=v.videoWidth;c.height=v.videoHeight;c.getContext('2d').drawImage(v,0,0);const blob=await new Promise(r=>c.toBlob(r,'image/jpeg',.85));if(!blob){status.textContent='Photo capture failed.';return;}const fd=new FormData();fd.append('photo',blob,'camera.jpg');status.textContent='Submitting your confirmed photo…';try{const res=await fetch('/capture/'+encodeURIComponent(id),{method:'POST',body:fd});const data=await res.json();status.textContent=data.message||'Submitted.';}catch(e){status.textContent='Submit failed.';}};
 </script></body></html>
