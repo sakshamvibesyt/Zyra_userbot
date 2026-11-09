@@ -5,6 +5,7 @@ import os
 import re
 from telethon import events
 import db as database
+from guard import is_ignored
 
 DEFAULT_TEXT = os.environ.get("DM_TEXT", "Hey {first_name}! Main abhi busy hoon, baad mein reply karunga. 🌙")
 try:
@@ -98,6 +99,8 @@ def setup(client):
     @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
     async def trap(e):
         if e.sender_id == client.me_id:
+            return
+        if await is_ignored(uid, e.sender_id, e.chat_id):
             return
         raw_text = (e.raw_text or "").strip()
         if raw_text.startswith(client.prefix):

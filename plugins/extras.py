@@ -11,6 +11,7 @@ import time
 from telethon import events
 import db as database
 from telethon.tl.types import DocumentAttributeSticker
+from guard import is_ignored
 
 # In-memory AFK state; reset when the worker restarts.
 _AFK = {}
@@ -95,7 +96,9 @@ def setup(client):
     filters = database.db.zyra_filters
     stickers = database.db.zyra_sticker_replies
     sticker_settings = database.db.zyra_sticker_settings
+    sticker_pool = database.db.zyra_sticker_pool
     sticker_cooldowns = {}
+    afk_reply_cooldowns = {}
     afk_settings = database.db.zyra_afk_settings
     afk_states = database.db.zyra_afk_states
 
@@ -153,6 +156,8 @@ def setup(client):
                 f"<code>{prefix}afk busy right now</code> — custom AFK message ke saath on karo\n"
                 f"<code>{prefix}afkmsg message</code> — default AFK message save karo\n"
                 f"<code>{prefix}afkmsg</code> — saved message dekho\n"
+                f"<code>{prefix}afk busy | 2h</code> — reason + auto-expiry\n"
+                f"<code>{prefix}afkstats</code> — AFK duration/mentions dekho\n"
                 f"<code>{prefix}unafk</code> — AFK mode off karo\n\n"
                 "<b>📢 AUTO PROMO</b>\n"
                 f"<code>{prefix}promo on</code> / <code>{prefix}promo off</code> — automatic promotion on/off karo\n"
@@ -194,7 +199,10 @@ def setup(client):
                 f"<code>{prefix}stickers</code> — saved sticker triggers dekho\n"
                 f"<code>{prefix}delsticker hi</code> — sticker trigger hatao\n"
                 f"<code>{prefix}sticker on</code> / <code>{prefix}sticker off</code> — sticker reply on/off karo\n"
-                f"<code>{prefix}sticker status</code> — sticker reply status dekho"
+                f"<code>{prefix}sticker status</code> — sticker reply status dekho\n"
+                f"<code>{prefix}stickeradd</code> — reply sticker ko response pool mein add karo\n"
+                f"<code>{prefix}stickerpool on/off</code> — sticker-to-sticker mode\n"
+                f"<code>{prefix}stickerpool</code> / <code>{prefix}stickerclear</code> — pool manage karo"
                 "</blockquote>\n"
                 "<i>Auto-reply poore message se match hota hai. Filter message ke andar word dhoondhta hai. Sticker reply exact trigger par chalta hai aur cooldown bhi hai.</i>"
             ),
@@ -204,6 +212,10 @@ def setup(client):
                 "<blockquote><b>🛡 GROUP ADMIN</b>\n"
                 f"<code>{prefix}adminhelp</code> — group moderation commands ki guide kholo\n"
                 "Admin commands tabhi chalenge jab tumhare account ke paas group mein required permissions hon.\n\n"
+                "<b>🚫 IGNORE CONTROLS</b>\n"
+                f"<code>{prefix}ignore @username</code> / reply + <code>{prefix}ignore</code>\n"
+                f"<code>{prefix}unignore @username</code> · <code>{prefix}ignored</code>\n"
+                f"<code>{prefix}ignorechat</code> / <code>{prefix}unignorechat</code>\n\n"
                 "<b>✦ AI</b>\n"
                 f"<code>{prefix}ai your question</code> — AI se sawal poochho\n"
                 f"<code>{prefix}ai auto on/off</code> — mention/reply par AI response\n"
@@ -577,10 +589,19 @@ def setup(client):
     async def load_afk_state():
         """Load persistent AFK state so it survives a worker restart."""
         if uid in _AFK:
-            return _AFK[uid]
+            cached = _AFK[uid]
+            if cached.get("expires_at") and time.time() >= float(cached["expires_at"]):
+                _AFK.pop(uid, None)
+                await afk_states.update_one({"uid": uid}, {"$set": {"active": False}})
+                return None
+            return cached
         doc = await afk_states.find_one({"uid": uid})
         if doc and doc.get("active"):
-            _AFK[uid] = {"message": doc.get("message", "I'm currently AFK."), "since": doc.get("since", time.time())}
+            expires = doc.get("expires_at")
+            if expires and time.time() >= float(expires):
+                await afk_states.update_one({"uid": uid}, {"$set": {"active": False}})
+                return None
+            _AFK[uid] = {"message": doc.get("message", "I'm currently AFK."), "since": doc.get("since", time.time()), "reason": doc.get("reason", ""), "expires_at": expires}
         return _AFK.get(uid)
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"afkmsg(?:\s+([\s\S]+))?$", outgoing=True))
@@ -600,18 +621,45 @@ def setup(client):
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"afk(?:\s+([\s\S]+))?$", outgoing=True))
     async def afk(e):
-        custom = e.pattern_match.group(1)
-        if custom and custom.strip():
-            message = custom.strip()
-        else:
+        raw = (e.pattern_match.group(1) or "").strip()
+        reason, duration = raw, None
+        if "|" in raw:
+            reason, duration = [x.strip() for x in raw.rsplit("|", 1)]
+        expires_at = None
+        if duration:
+            match = re.fullmatch(r"(\d+)(m|h|d)", duration.lower())
+            if not match:
+                return await e.edit("Duration format: <code>.afk busy | 2h</code> (m/h/d).")
+            amount = int(match.group(1)); unit = match.group(2)
+            if amount < 1 or amount > 30:
+                return await e.edit("Duration 1–30 units ke beech rakho.")
+            expires_at = time.time() + amount * {"m": 60, "h": 3600, "d": 86400}[unit]
+        if not reason:
             doc = await afk_settings.find_one({"uid": uid})
-            message = doc.get("message") if doc else "I'm currently AFK. I'll reply when I'm back."
+            reason = doc.get("message") if doc else "I'm currently AFK. I'll reply when I'm back."
+        message = reason if "|" not in raw or reason else "I'm currently AFK."
         if len(message) > 3500:
             return await e.edit("AFK message is too long. Maximum: 3500 characters.")
         since = time.time()
-        _AFK[uid] = {"message": message, "since": since}
-        await afk_states.update_one({"uid": uid}, {"$set": {"active": True, "message": message, "since": since}}, upsert=True)
-        await e.edit("🎀 <b>AFK enabled</b>\nYour custom message will be sent when someone messages you or mentions you.")
+        _AFK[uid] = {"message": message, "since": since, "reason": message, "expires_at": expires_at}
+        await afk_states.update_one({"uid": uid}, {"$set": {"active": True, "message": message, "reason": message, "since": since, "expires_at": expires_at, "mention_count": 0}}, upsert=True)
+        suffix = "\nAuto-expiry: <b>%s</b>" % html.escape(duration) if duration else ""
+        await e.edit("🎀 <b>AFK enabled</b>\nReason: %s%s\n\nUse <code>%sunafk</code> to return." % (html.escape(message[:250]), suffix, client.prefix))
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"afkstats$", outgoing=True))
+    async def afk_stats(e):
+        await load_afk_state()
+        doc = await afk_states.find_one({"uid": uid}) or {}
+        active = bool(doc.get("active"))
+        since = float(doc.get("since", time.time()))
+        duration = max(0, int(time.time() - since)) if active else 0
+        expires = doc.get("expires_at")
+        remaining = max(0, int(expires - time.time())) if expires else None
+        def fmt(seconds):
+            return "%dh %dm" % (seconds // 3600, (seconds % 3600) // 60)
+        await e.edit("<b>🌙 ZYRA AFK STATS</b>\nStatus: <b>%s</b>\nReason: %s\nDuration: <b>%s</b>\nMentions: <b>%s</b>\nRemaining: <b>%s</b>" % (
+            "ON" if active else "OFF", html.escape(doc.get("reason", doc.get("message", "—"))[:180]), fmt(duration),
+            int(doc.get("mention_count", 0)), fmt(remaining) if remaining is not None else "No auto-expiry"))
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"unafk$", outgoing=True))
     async def unafk(e):
@@ -636,21 +684,42 @@ def setup(client):
 
     @client.on(events.NewMessage(incoming=True))
     async def incoming(e):
-        if not e.raw_text or getattr(e, "sender_id", None) == client.me_id:
+        if getattr(e, "sender_id", None) == client.me_id:
+            return
+        if await is_ignored(uid, e.sender_id, e.chat_id):
             return
         afk_data = await load_afk_state()
         if afk_data and e.sender_id and (e.is_private or e.mentioned):
             try:
-                ai_cfg = await database.db.zyra_ai_settings.find_one({"uid": uid}) or {}
-                if not ai_cfg.get("auto_enabled", False):
-                    # Render sender placeholders while keeping user-supplied text escaped.
+                now = time.monotonic()
+                if now - afk_reply_cooldowns.get((e.chat_id, e.sender_id), 0) >= 300:
+                    afk_reply_cooldowns[(e.chat_id, e.sender_id)] = now
                     sender = await e.get_sender()
                     reply_text = _render_afk_message(afk_data["message"], sender)
                     await e.reply(reply_text, parse_mode="html")
+                    await afk_states.update_one({"uid": uid}, {"$inc": {"mention_count": 1}})
+                return
             except Exception:
                 pass
-        text = e.raw_text.strip()
-        # Sticker replies use exact, case-insensitive trigger matches.
+        text = (e.raw_text or "").strip()
+        # Sticker-to-sticker mode: any incoming sticker can trigger a saved sticker response.
+        if e.sticker:
+            pool_cfg = await sticker_settings.find_one({"uid": uid}) or {}
+            if pool_cfg.get("enabled", True) and pool_cfg.get("sticker_to_sticker", False):
+                pool = await sticker_pool.find({"uid": uid}).to_list(length=50)
+                if pool:
+                    key = (e.chat_id, e.sender_id, "sticker-pool")
+                    now = time.monotonic()
+                    if now - sticker_cooldowns.get(key, 0) >= 30:
+                        sticker_cooldowns[key] = now
+                        chosen = random.choice(pool)
+                        try:
+                            source = await client.get_messages(chosen["source_chat_id"], ids=chosen["source_message_id"])
+                            if source and source.media:
+                                await client.send_file(e.chat_id, source, reply_to=e.id)
+                        except Exception:
+                            pass
+        # Sticker replies use exact, case-insensitive text trigger matches.
         sticker_cfg = await sticker_settings.find_one({"uid": uid})
         if sticker_cfg is None or sticker_cfg.get("enabled", True):
             sticker_doc = await stickers.find_one({"uid": uid, "trigger": text.casefold()})
@@ -770,6 +839,36 @@ def setup(client):
         items = await stickers.find({"uid": uid}).to_list(length=100)
         lines = ["• <code>%s</code>" % html.escape(item["trigger"]) for item in items]
         await e.edit("🎭 <b>Saved sticker triggers</b>\n" + ("\n".join(lines) if lines else "No sticker replies saved."))
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"stickeradd$", outgoing=True))
+    async def sticker_pool_add(e):
+        if not e.is_reply:
+            return await e.edit("Reply to a sticker with <code>%sstickeradd</code> to add it to the response pool." % client.prefix)
+        source = await e.get_reply_message()
+        is_sticker = bool(source and source.document and any(isinstance(a, DocumentAttributeSticker) for a in (source.document.attributes or [])))
+        if not is_sticker:
+            return await e.edit("Please reply to an actual Telegram sticker.")
+        await sticker_pool.update_one({"uid": uid, "source_chat_id": source.chat_id, "source_message_id": source.id},
+            {"$set": {"added_at": time.time()}}, upsert=True)
+        await e.edit("🎭 Sticker added to sticker-to-sticker pool.")
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"stickerpool$", outgoing=True))
+    async def sticker_pool_list(e):
+        items = await sticker_pool.find({"uid": uid}).to_list(length=50)
+        cfg = await sticker_settings.find_one({"uid": uid}) or {}
+        await e.edit("<b>🎭 STICKER RESPONSE POOL</b>\nSaved: <b>%s</b>\nSticker-to-sticker: <b>%s</b>\n\nUse <code>%sstickeradd</code> replying to a sticker, then <code>%sstickerpool on</code>." %
+            (len(items), "ON" if cfg.get("sticker_to_sticker") else "OFF", client.prefix, client.prefix))
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"stickerpool\s+(on|off)$", outgoing=True))
+    async def sticker_pool_toggle(e):
+        enabled = e.pattern_match.group(1) == "on"
+        await sticker_settings.update_one({"uid": uid}, {"$set": {"sticker_to_sticker": enabled}}, upsert=True)
+        await e.edit("Sticker-to-sticker mode <b>%s</b>." % ("ON ✅" if enabled else "OFF ⏸"))
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"stickerclear$", outgoing=True))
+    async def sticker_pool_clear(e):
+        result = await sticker_pool.delete_many({"uid": uid})
+        await e.edit("🗑 Cleared <b>%s</b> saved stickers." % result.deleted_count)
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"sticker\s+(on|off|status)$", outgoing=True))
     async def sticker_reply_control(e):

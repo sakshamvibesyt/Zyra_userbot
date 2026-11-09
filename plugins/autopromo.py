@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 from telethon import events
 import db as database
+from guard import is_ignored
 
 DEFAULT_ON = os.environ.get("AUTO_PROMO", "false").lower() == "true"
 DEFAULT_LINK = os.environ.get("PROMO_CHANNEL", "").strip()
@@ -160,6 +161,8 @@ def setup(client):
     async def promo_on_mention_or_reply(event):
         if not event.is_group or not event.sender_id or event.sender_id == client.me_id:
             return
+        if await is_ignored(uid, event.sender_id, event.chat_id):
+            return
         try:
             sender = await event.get_sender()
             if not sender or getattr(sender, "bot", False):
@@ -298,6 +301,8 @@ def setup(client):
 
     @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
     async def dm_subscription(e):
+        if await is_ignored(uid, e.sender_id, e.chat_id):
+            return
         text = (e.raw_text or "").strip().lower()
         if text == f"{client.prefix.lower()}promo subscribe":
             await subscribers.update_one({"uid": uid, "chat_id": int(e.chat_id)}, {"$set": {"enabled": True}}, upsert=True)
@@ -312,6 +317,8 @@ def setup(client):
 
     @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_group))
     async def group_promo(e):
+        if await is_ignored(uid, e.sender_id, e.chat_id):
+            return
         if not await promo_enabled():
             return
         # New/previously unseen groups are enrolled automatically when active.

@@ -1,11 +1,8 @@
-"""Premium text dashboard for a connected Telegram user account.
-
-Telegram inline keyboards are bot-only; the userbot dashboard therefore uses
-clear command navigation instead of non-working callback buttons.
-"""
+"""Advanced text dashboard with account, group, AI and activity summaries."""
 import html
 import re
 import os
+import time
 from telethon import events
 import db as database
 
@@ -14,65 +11,79 @@ def setup(client):
     uid = int(client.uid)
     promo = database.db.zyra_promo_config
     dmtrap = database.db.zyra_dmtrap_config
-    groups = database.db.zyra_promo_groups
+    promo_groups = database.db.zyra_promo_groups
     subscribers = database.db.zyra_promo_subscribers
     ai_settings = database.db.zyra_ai_settings
+    seen_groups = database.db.zyra_seen_groups
+    logs = database.db.zyra_activity_logs
+    ignored_users = database.db.zyra_ignored_users
+    ignored_chats = database.db.zyra_ignored_chats
+    afk_states = database.db.zyra_afk_states
+    sticker_replies = database.db.zyra_sticker_replies
 
-    async def render_page(page="home"):
+    async def render(page="home"):
         p = html.escape(client.prefix)
         pcfg = await promo.find_one({"uid": uid}) or {}
         dcfg = await dmtrap.find_one({"uid": uid}) or {}
+        acfg = await ai_settings.find_one({"uid": uid}) or {}
         promo_on = pcfg.get("enabled", os.environ.get("AUTO_PROMO", "false").lower() == "true")
-        dm_on = dcfg.get("enabled", True)
-        group_count = await groups.count_documents({"uid": uid, "enabled": True})
-        dm_count = await subscribers.count_documents({"uid": uid, "enabled": True})
-        if page == "tags":
-            return ("<b>🏷 SMART TAG CENTER</b>\n\n"
-                    f"<code>{p}tagrefresh</code> — scan visible group members\n"
-                    f"<code>{p}tagall message</code> — admin-only group mentions\n"
-                    f"<code>{p}taglist</code> — saved/opt-out count\n"
-                    f"<code>{p}tagstop</code> — stop current run\n"
-                    f"<code>{p}tagjoin</code> / <code>{p}tagleave</code> — opt in/out\n"
-                    f"<code>{p}tagclear</code> — clear current group index\n\n"
-                    "Telegram may limit participant discovery. Respect group rules and opt-outs.")
-        if page == "promo":
-            return ("<b>📢 AUTO PROMO</b>\n\n"
-                    f"Status: <b>{'ON ✅' if promo_on else 'OFF 🛑'}</b>\n"
-                    f"Groups enrolled: <b>{group_count}</b> · Opt-in DMs: <b>{dm_count}</b>\n\n"
-                    f"<code>{p}promo on/off</code>\n<code>{p}promo set Your message</code>\n"
-                    f"<code>{p}promo add JOIN | https://t.me/group</code>\n<code>{p}promo time 12h</code>\n"
-                    f"<code>{p}promo status</code> · <code>{p}promo test</code>")
-        if page == "dm":
-            return ("<b>💌 DM TRAP</b>\n\n"
-                    f"Status: <b>{'ON ✅' if dm_on else 'OFF 🛑'}</b>\n"
-                    f"<code>{p}dmtrap on/off/status</code>\n"
-                    f"<code>{p}dmtrap set Your reply {{first_name}}</code>\n"
-                    f"<code>{p}dmtrap cooldown 3600</code>\n<code>{p}dmtrap reset</code>")
+        group_count = await seen_groups.count_documents({"uid": uid})
+        group_messages = 0
+        async for g in seen_groups.find({"uid": uid}):
+            group_messages += int(g.get("message_count", 0))
+        log_count = await logs.count_documents({"uid": uid})
+        ai_requests = await logs.count_documents({"uid": uid, "kind": {"$in": ["ai_request", "ai_auto"]}})
+        error_count = await logs.count_documents({"uid": uid, "kind": "error"})
+        ignored_u = await ignored_users.count_documents({"uid": uid})
+        ignored_c = await ignored_chats.count_documents({"uid": uid})
+        sticker_count = await sticker_replies.count_documents({"uid": uid})
+        afk = await afk_states.find_one({"uid": uid}) or {}
+        if page == "groups":
+            items = await seen_groups.find({"uid": uid}).sort("last_seen", -1).to_list(length=30)
+            lines = ["• <b>%s</b> — %s msgs · %s" % (html.escape(x.get("title", "Group")), int(x.get("message_count", 0)), time.strftime("%d %b %H:%M", time.localtime(x.get("last_seen", 0)))) for x in items]
+            return "<b>👥 GROUP ACTIVITY</b>\n\n" + ("\n".join(lines) or "No group activity logged yet.") + f"\n\nGroups tracked: <b>{group_count}</b> · Total activity: <b>{group_messages}</b>"
+        if page == "logs":
+            items = await logs.find({"uid": uid}).sort("at", -1).to_list(length=15)
+            lines = []
+            for x in items:
+                stamp = time.strftime("%d %b %H:%M", time.localtime(x.get("at", 0)))
+                actor = html.escape(x.get("sender_name", "")[:35])
+                detail = html.escape(x.get("detail", "")[:70])
+                lines.append("• <code>%s</code> · <b>%s</b> · %s · %s\n  <i>%s</i>" % (stamp, html.escape(x.get("kind", "event")), html.escape(x.get("title", "")), actor, detail))
+            return "<b>🧾 RECENT LOGS</b>\n\n" + ("\n".join(lines) or "No logs yet.") + "\n\n<i>Message content is not stored.</i>"
+        if page == "ignore":
+            return ("<b>🚫 IGNORE CENTER</b>\n\n" + f"Ignored users: <b>{ignored_u}</b>\nIgnored chats: <b>{ignored_c}</b>\n\n"
+                f"<code>{p}ignore @username</code> or reply + <code>{p}ignore</code>\n"
+                f"<code>{p}unignore @username</code>\n<code>{p}ignorechat</code> / <code>{p}unignorechat</code>\n<code>{p}ignored</code>")
+        if page == "afk":
+            return ("<b>🌙 ADVANCED AFK</b>\n\n" + f"Status: <b>{'ON' if afk.get('active') else 'OFF'}</b>\n"
+                f"Mentions/replies counted: <b>{int(afk.get('mention_count', 0))}</b>\n\n"
+                f"<code>{p}afk busy | 2h</code> — reason + optional duration\n<code>{p}afkmsg text</code> — default message\n"
+                f"<code>{p}afkstats</code> — stats · <code>{p}unafk</code> — return")
         if page == "ai":
-            acfg = await ai_settings.find_one({"uid": uid}) or {}
-            return ("<b>🧠 AI BRAIN</b>\n\n"
-                    f"Chat replies: <b>{'ON' if acfg.get('auto_enabled') else 'OFF'}</b>\n"
-                    f"Sticker reactions: <b>{'ON' if acfg.get('sticker_enabled') else 'OFF'}</b>\n\n"
-                    f"<code>{p}ai your question</code> — ask AI\n"
-                    f"<code>{p}ai auto on/off</code> — reply when mentioned/replied to\n"
-                    f"<code>{p}ai sticker on/off</code> — react to stickers replying to you\n"
-                    f"<code>{p}ai status</code> — view AI status\n\n"
-                    "AI requires GEMINI_API_KEY and GEMINI_MODEL in Render environment variables.")
-        return ("<b>✦ 𝐙𝐘𝐑𝐀 𝐏𝐑𝐄𝐌𝐈𝐔𝐌 𝐃𝐀𝐒𝐇𝐁𝐎𝐀𝐑𝐃 ✦</b>\n"
-                "<i>Dark control center · Account workspace</i>\n\n"
-                f"📢 Auto Promo: <b>{'ON' if promo_on else 'OFF'}</b>\n"
-                f"💌 DM Trap: <b>{'ON' if dm_on else 'OFF'}</b>\n"
-                f"👥 Promo groups: <b>{group_count}</b> · DM subscribers: <b>{dm_count}</b>\n\n"
-                "<b>MODULES</b>\n"
-                f"<code>{p}dashboard promo</code> · Auto Promo\n"
-                f"<code>{p}dashboard dm</code> · DM Trap\n"
-                f"<code>{p}dashboard tags</code> · Smart Tags\n"
-                f"<code>{p}dashboard ai</code> · AI Brain\n"
-                f"<code>{p}promo trigger on/off</code> · Promo when mentioned/replied to\n\n"
-                "<i>Use the commands shown in each module to control settings.</i>")
+            return ("<b>🧠 ZYRA AI</b>\n\n" + f"Auto replies: <b>{'ON' if acfg.get('auto_enabled') else 'OFF'}</b>\n"
+                f"Sticker reactions: <b>{'ON' if acfg.get('sticker_enabled') else 'OFF'}</b>\n"
+                f"Conversation memory: <b>{'ON' if acfg.get('memory_enabled', True) else 'OFF'}</b>\n\n"
+                f"<code>{p}ai question</code> · <code>{p}ai auto on/off</code>\n<code>{p}ai memory on/off</code> · <code>{p}ai clear</code>\n"
+                "Provider: Gemini · Requires GEMINI_API_KEY")
+        if page == "promo":
+            enrolled = await promo_groups.count_documents({"uid": uid, "enabled": True})
+            return f"<b>📢 AUTO PROMO</b>\nStatus: <b>{'ON' if promo_on else 'OFF'}</b>\nGroups enrolled: <b>{enrolled}</b>\n<code>{p}promo on/off</code> · <code>{p}promo status</code>"
+        if page == "dm":
+            return f"<b>💌 DM AUTO REPLY</b>\nStatus: <b>{'ON' if dcfg.get('enabled', True) else 'OFF'}</b>\n<code>{p}dmtrap on/off/status</code> · <code>{p}dmtrap cooldown 3600</code>"
+        me = await client.get_me()
+        started = float(getattr(client, "zyra_started_at", time.time()))
+        uptime = max(0, int(time.time() - started))
+        uptime_text = "%dd %dh %dm" % (uptime // 86400, (uptime % 86400) // 3600, (uptime % 3600) // 60)
+        return ("<b>✦ 𝐙𝐘𝐑𝐀 𝐀𝐃𝐕𝐀𝐍𝐂𝐄𝐃 𝐃𝐀𝐒𝐇𝐁𝐎𝐀𝐑𝐃 ✦</b>\n<i>Account command center · Live MongoDB stats</i>\n\n"
+            f"👤 Account: <b>{html.escape(me.first_name or 'Telegram user')}</b> · <code>{me.id}</code>\n⏱ Uptime: <b>{uptime_text}</b>\n"
+            f"👥 Groups tracked: <b>{group_count}</b>\n💬 Group activity count: <b>{group_messages}</b>\n🧠 AI requests: <b>{ai_requests}</b>\n"
+            f"🧾 Recent log records: <b>{log_count}</b> · ⚠️ Errors: <b>{error_count}</b>\n"
+            f"🚫 Ignored users/chats: <b>{ignored_u}/{ignored_c}</b>\n🎭 Sticker rules: <b>{sticker_count}</b>\n"
+            f"🧠 AI: <b>{'ON' if acfg.get('auto_enabled') else 'OFF'}</b> · 🌙 AFK: <b>{'ON' if afk.get('active') else 'OFF'}</b>\n\n"
+            "<b>SECTIONS</b>\n" + "\n".join(f"<code>{p}dashboard {x}</code>" for x in ("groups", "logs", "ignore", "afk", "ai", "promo", "dm")) +
+            "\n\n<i>Logs record activity metadata only; message text is not saved.</i>")
 
-    @client.on(events.NewMessage(pattern=r"^" + re.escape(client.prefix) + r"dashboard(?:\s+(home|promo|dm|tags|ai))?$", outgoing=True))
+    @client.on(events.NewMessage(pattern=r"^" + re.escape(client.prefix) + r"dashboard(?:\s+(home|groups|logs|ignore|afk|ai|promo|dm))?$", outgoing=True))
     async def dashboard_command(e):
-        page = (e.pattern_match.group(1) or "home").lower()
-        body = await render_page(page)
-        await e.edit(body, parse_mode="html")
+        await e.edit(await render((e.pattern_match.group(1) or "home").lower()), parse_mode="html")
