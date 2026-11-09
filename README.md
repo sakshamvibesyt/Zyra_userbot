@@ -37,10 +37,12 @@ Set `GEMINI_API_KEY` and `GEMINI_MODEL=gemini-2.5-flash-lite` in Render. Command
 
 - `.ai status` — show key/model and feature status
 - `.ai auto on/off` — enable/disable opt-in private replies and group mention/reply responses
-- `.ai sticker on/off` — enable/disable short sticker reactions (sticker image itself is not analyzed)
-- `.ai <question>` — ask Gemini directly
+- `.ai sticker on/off` — enable/disable short sticker reactions
+- `.ai memory on/off` — enable/disable per-chat conversation history
+- `.ai clear` — clear this chat's saved AI conversation
+- `.ai <question>` — ask Gemini directly; reply to a photo with `.ai describe` for image understanding
 
-AI replies use a Telegram quote block with the `— 𝐙𝐘𝐑𝐀 𝐀𝐈` signature. Free-tier rate limits may apply.
+AI replies use a Telegram quote block with the `— 𝐙𝐘𝐑𝐀 𝐀𝐈` signature. Free-tier rate limits may apply. Conversation history is stored in MongoDB and can be cleared with `.ai clear`.
 
 ## Plugins
 
@@ -195,3 +197,15 @@ The connected user account can save a Telegram sticker as an exact text-trigger 
 4. Manage rules with `.stickers`, `.delsticker hi`, and `.sticker on`, `.sticker off`, or `.sticker status`.
 
 Sticker source messages must remain available in Telegram because the userbot retrieves the original sticker message when it sends the reply. Auto sticker replies are enabled by default and have a short per-chat/sender trigger cooldown.
+
+
+## Advanced Zyra modules
+
+- `.dashboard` now includes group activity, recent logs, ignore counts, AFK status, AI status and sticker counts.
+- `.ignore @username` (or reply + `.ignore`) and `.unignore @username` manage ignored users.
+- `.ignorechat` / `.unignorechat` pause automatic listeners in the current group.
+- `.afk reason | 2h` enables AFK with optional expiry; `.afkstats` shows duration and reply count.
+- `.stickeradd` while replying to a sticker adds it to the response pool; `.stickerpool on` enables sticker-to-sticker replies.
+- AI supports per-chat text conversation memory (`.ai memory on/off`, `.ai clear`) and photo understanding by replying to a photo with `.ai describe`.
+
+Group activity logs store metadata and counters only, not message text. Set `LOGGER_GROUP_ID` to a private group ID to receive rate-limited group activity summaries and member join/leave events. Add the connected user account to that private group and restrict its members.

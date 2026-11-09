@@ -172,7 +172,11 @@ HELP_SECTIONS = {
     b"help_social": (
         "<b>♡ AFK, NOTES & AUTO-REPLIES</b>\n\n"
         "<code>.afk studying</code> — set AFK status\n"
+        "<code>.afk busy | 2h</code> — AFK with auto-expiry\n"
+        "<code>.afkstats</code> — AFK duration and reply count\n"
         "<code>.unafk</code> — clear AFK status\n"
+        "<code>.ignore @username</code> / reply + <code>.ignore</code> — ignore user\n"
+        "<code>.unignore @username</code> · <code>.ignorechat</code> · <code>.unignorechat</code>\n"
         "<code>.note name | text</code> — save a note\n"
         "<code>.getnote name</code> — read a note\n"
         "<code>.delnote name</code> — delete a note\n"
@@ -200,6 +204,9 @@ HELP_SECTIONS = {
     b"help_ai": (
         "<b>✦ AI & PLUGINS</b>\n\n"
         "<code>.ai your question</code> — ask the configured AI provider\n"
+        "<code>.ai memory on/off</code> — per-chat conversation context\n"
+        "<code>.ai clear</code> — clear this chat's AI memory\n"
+        "Reply to a photo with <code>.ai describe</code> — image understanding\n"
         "<code>/plugins</code> — view plugin toggles in the bot chat\n\n"
         "AI works only when its provider key, model and API base URL are configured correctly.\n"
         "<i>Plugin changes may restart your connected userbot client.</i>"

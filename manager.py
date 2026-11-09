@@ -1,4 +1,4 @@
-import asyncio, importlib, logging, os, pkgutil
+import asyncio, importlib, logging, os, pkgutil, time
 
 from telethon import TelegramClient
 from telethon.sessions import StringSession
@@ -48,6 +48,7 @@ class Manager:
         client.me_id = me.id
         client.uid = uid
         client.prefix = doc.get("prefix", ".")
+        client.zyra_started_at = time.time()
 
         self.load_plugins(client, set(doc.get("disabled", [])))
         self.clients[uid] = client
