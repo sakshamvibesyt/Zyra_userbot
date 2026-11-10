@@ -142,9 +142,9 @@ def setup(client):
                 f"<code>{prefix}tagstop</code> — chal raha tag process roko\n"
                 f"<code>{prefix}tagclear</code> — is group ki saved member list clear karo\n\n"
                 "<b>🔁 MESSAGE ROTATION</b>\n"
-                f"<code>{prefix}addraid msg 1 | msg 2</code> — 20 tak messages save karo\n"
-                f"<code>{prefix}raid 5</code> — 1–10 saved messages bhejo\n"
-                f"<code>{prefix}clearraid</code> — saved messages delete karo"
+                f"<code>{prefix}addraid msg 1 | msg 2</code> — owner shared messages save kare\n"
+                f"<code>{prefix}raid 3</code> — shared list se up to 3 messages (10 min chat cooldown)\n"
+                f"<code>{prefix}clearraid</code> — owner shared messages delete kare"
                 "</blockquote>\n"
                 "<i>Telegram har member ko list nahi karta. Sirf available members tag honge; opt-out aur limits apply hongi.</i>"
             ),
@@ -260,47 +260,75 @@ def setup(client):
         )
 
 
-    # Per-chat saved rotation messages. Stored in MongoDB so they survive restarts.
+    # Owner-managed shared message rotation library. All connected users can use it,
+    # but only the configured owner can change the shared messages.
     raid_store = database.db.zyra_raid_messages
+    raid_cooldowns = database.db.zyra_raid_cooldowns
     raid_running = set()
+    RAID_OWNER_ID = _env_int("OWNER_ID", 0, 0, 2**63 - 1)
+    RAID_MAX_PER_RUN = 3
+    RAID_DELAY_SECONDS = 5
+    RAID_CHAT_COOLDOWN_SECONDS = 600
+
+    def _is_raid_owner(event):
+        return bool(RAID_OWNER_ID and event.sender_id == RAID_OWNER_ID)
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"addraid(?:\s+([\s\S]+))?$", outgoing=True))
     async def addraid(e):
+        if not _is_raid_owner(e):
+            return await e.edit("🔒 Shared raid messages sirf configured owner update kar sakta hai.")
         raw = (e.pattern_match.group(1) or "").strip()
         msgs = [part.strip() for part in raw.split("|") if part.strip()]
         if not msgs:
-            return await e.edit("Usage: <code>%saddraid message 1 | message 2 | message 3</code>" % client.prefix)
+            return await e.edit("Usage: <code>%saddraid message 1 | message 2 | message 3</code>" % html.escape(client.prefix))
         if len(msgs) > 20 or any(len(m) > 1000 for m in msgs):
             return await e.edit("Limit: maximum 20 messages; each message up to 1000 characters.")
-        await raid_store.update_one({"uid": uid, "chat_id": e.chat_id}, {"$set": {"messages": msgs}}, upsert=True)
-        await e.edit("✅ Saved <b>%d</b> rotation messages for this chat." % len(msgs))
+        await raid_store.update_one(
+            {"_id": "owner_shared_raid_messages"},
+            {"$set": {"owner_id": RAID_OWNER_ID, "messages": msgs, "updated_at": time.time()}},
+            upsert=True,
+        )
+        await e.edit("✅ Owner ke <b>%d shared messages</b> save ho gaye. Ab connected users <code>%sraid</code> se use kar sakte hain." % (len(msgs), html.escape(client.prefix)))
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"(?:clearraid|deltraid|delraid)$", outgoing=True))
     async def clearraid(e):
-        await raid_store.delete_one({"uid": uid, "chat_id": e.chat_id})
+        if not _is_raid_owner(e):
+            return await e.edit("🔒 Shared raid messages sirf configured owner delete kar sakta hai.")
+        await raid_store.delete_one({"_id": "owner_shared_raid_messages"})
         raid_running.discard(e.chat_id)
-        await e.edit("🗑️ Saved rotation messages cleared for this chat.")
+        await e.edit("🗑️ Owner ke shared rotation messages clear ho gaye.")
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"raid(?:\s+(\d+))?$", outgoing=True))
     async def raid(e):
-        count = int(e.pattern_match.group(1) or 5)
-        if count < 1 or count > 10:
-            return await e.edit("Choose 1–10 messages per run to avoid flooding the chat.")
-        doc = await raid_store.find_one({"uid": uid, "chat_id": e.chat_id})
+        count = int(e.pattern_match.group(1) or RAID_MAX_PER_RUN)
+        if count < 1 or count > RAID_MAX_PER_RUN:
+            return await e.edit("Choose 1–%d messages per run. Shared rotation has a chat cooldown." % RAID_MAX_PER_RUN)
+        doc = await raid_store.find_one({"_id": "owner_shared_raid_messages"})
         msgs = (doc or {}).get("messages", [])
         if not msgs:
-            return await e.edit("No saved messages. Use <code>%saddraid msg1 | msg2</code> first." % client.prefix)
+            return await e.edit("Owner ne abhi shared messages save nahi kiye.")
         if e.chat_id in raid_running:
-            return await e.edit("A rotation is already running here. Use <code>%sstop</code> to stop it." % client.prefix)
+            return await e.edit("A rotation is already running here. Use <code>%sstop</code> to stop it." % html.escape(client.prefix))
+        now = time.time()
+        cooldown = await raid_cooldowns.find_one({"chat_id": e.chat_id})
+        next_allowed = float((cooldown or {}).get("next_allowed", 0))
+        if next_allowed > now:
+            remaining = int(next_allowed - now)
+            return await e.edit("⏳ Is chat mein rotation cooldown active hai. %d sec baad try karo." % remaining)
+        await raid_cooldowns.update_one(
+            {"chat_id": e.chat_id},
+            {"$set": {"next_allowed": now + RAID_CHAT_COOLDOWN_SECONDS}},
+            upsert=True,
+        )
         await e.delete()
         raid_running.add(e.chat_id)
         try:
-            for i in range(count):
+            for i in range(min(count, len(msgs))):
                 if e.chat_id not in raid_running:
                     break
-                await client.send_message(e.chat_id, msgs[i % len(msgs)])
-                if i + 1 < count:
-                    await asyncio.sleep(3)
+                await client.send_message(e.chat_id, msgs[i])
+                if i + 1 < min(count, len(msgs)):
+                    await asyncio.sleep(RAID_DELAY_SECONDS)
         finally:
             raid_running.discard(e.chat_id)
 
