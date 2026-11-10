@@ -140,6 +140,10 @@ def setup(client):
                 f"<code>{prefix}taglist</code> — saved aur opt-out members ka count dekho\n"
                 f"<code>{prefix}tagjoin</code> / <code>{prefix}tagleave</code> — tagging allow/stop karo\n"
                 f"<code>{prefix}tagstop</code> — chal raha tag process roko\n"
+                f"<code>{prefix}onetag</code> — opted-in members mein se max 3 ko alag message mein tag karo\n"
+                f"<code>{prefix}onetag @username</code> — opted-in user ko ek message mein tag karo\n"
+                f"<code>{prefix}onetagjoin</code> / <code>{prefix}onetagleave</code> — OneTag opt-in/out\n"
+                f"<code>{prefix}onetagstop</code> — OneTag process roko\n"
                 f"<code>{prefix}tagclear</code> — is group ki saved member list clear karo\n\n"
                 "<b>🔁 MESSAGE ROTATION</b>\n"
                 f"<code>{prefix}addraid msg 1 | msg 2</code> — owner shared messages save kare\n"
@@ -266,9 +270,9 @@ def setup(client):
     raid_cooldowns = database.db.zyra_raid_cooldowns
     raid_running = set()
     RAID_OWNER_ID = _env_int("OWNER_ID", 0, 0, 2**63 - 1)
-    RAID_MAX_PER_RUN = 1000
-    RAID_DELAY_SECONDS = 2
-    RAID_CHAT_COOLDOWN_SECONDS = 300
+    RAID_MAX_PER_RUN = 3
+    RAID_DELAY_SECONDS = 5
+    RAID_CHAT_COOLDOWN_SECONDS = 600
 
     def _is_raid_owner(event):
         return bool(RAID_OWNER_ID and event.sender_id == RAID_OWNER_ID)
@@ -464,6 +468,123 @@ def setup(client):
             await e.edit("You are included in future ZYRA TagAll mentions.")
         else:
             await e.reply("You are included in future ZYRA TagAll mentions.")
+
+    # Separate opt-in OneTag tool. Only members who explicitly join are eligible.
+    # Each run is deliberately small and rate-limited to avoid unsolicited mass mentions.
+    onetag_runs = database.db.zyra_onetag_runs
+    onetag_running = {}
+    ONETAG_MAX_PER_RUN = 3
+    ONETAG_DELAY_SECONDS = 8
+    ONETAG_COOLDOWN_SECONDS = 3600
+    ONETAG_TEMPLATES = [
+        "Kya haal chaal?",
+        "Kaisa raha aaj ka din?",
+        "Kya kar rahe ho?",
+        "Sab badhiya?",
+        "Aaj ka plan kya hai?",
+        "Khana ho gaya?",
+        "Group mein kya scene hai?",
+        "Batao, sab kaise ho?",
+        "Aaj mood kaisa hai?",
+        "Kya naya chal raha hai?",
+    ]
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"onetagjoin$"))
+    async def onetag_optin(e):
+        if not e.is_group or not e.sender_id:
+            return
+        await tagall_members.update_one(
+            {"uid": uid, "chat_id": int(e.chat_id), "user_id": int(e.sender_id)},
+            {"$set": {"onetag_opted_in": True, "seen_at": time.time()}},
+            upsert=True,
+        )
+        msg = "✅ You opted in to OneTag. You can leave anytime with .onetagleave."
+        await (e.edit(msg) if e.out else e.reply(msg))
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"onetagleave$"))
+    async def onetag_optout(e):
+        if not e.is_group or not e.sender_id:
+            return
+        await tagall_members.update_one(
+            {"uid": uid, "chat_id": int(e.chat_id), "user_id": int(e.sender_id)},
+            {"$set": {"onetag_opted_in": False}},
+            upsert=True,
+        )
+        msg = "You are excluded from future OneTag mentions."
+        await (e.edit(msg) if e.out else e.reply(msg))
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"onetag(?:\s+(@[A-Za-z0-9_]{5,32}))?$", outgoing=True))
+    async def onetag(e):
+        if not e.is_group:
+            return await e.edit("This command works only in groups.")
+        key = (uid, int(e.chat_id))
+        if key in onetag_running:
+            return await e.edit(f"OneTag is already running. Use <code>{client.prefix}onetagstop</code>.", parse_mode="html")
+        cooldown = await onetag_runs.find_one({"uid": uid, "chat_id": int(e.chat_id)})
+        remaining = ONETAG_COOLDOWN_SECONDS - (time.time() - float((cooldown or {}).get("last_started", 0)))
+        if remaining > 0:
+            return await e.edit(f"⏳ OneTag cooldown active. Try again in {int(remaining // 60) + 1} min.")
+
+        requested_username = (e.pattern_match.group(1) or "").lstrip("@").lower()
+        query = {"uid": uid, "chat_id": int(e.chat_id), "onetag_opted_in": True}
+        if requested_username:
+            query["username"] = {"$regex": "^" + re.escape(requested_username) + "$", "$options": "i"}
+            member = await tagall_members.find_one(query)
+            if not member:
+                return await e.edit("User nahi mila ya usne OneTag ke liye opt-in nahi kiya. Use <code>.onetagjoin</code> karna hoga.")
+            members = [member]
+        else:
+            cursor = tagall_members.find(query)
+            eligible = await cursor.to_list(length=500)
+            if not eligible:
+                return await e.edit("Abhi koi opted-in member nahi hai. Members group mein <code>.onetagjoin</code> bhejein.")
+            random.shuffle(eligible)
+            members = eligible[:ONETAG_MAX_PER_RUN]
+
+        await onetag_runs.update_one(
+            {"uid": uid, "chat_id": int(e.chat_id)},
+            {"$set": {"last_started": time.time(), "member_count": len(members)}},
+            upsert=True,
+        )
+        stop_event = asyncio.Event()
+        onetag_running[key] = stop_event
+        status = await e.edit(
+            f"✦ <b>ZYRA ONETAG</b>\nSelected opted-in members: <b>{len(members)}</b>\n"
+            f"One mention per message · Delay: <b>{ONETAG_DELAY_SECONDS}s</b>\n"
+            f"Stop: <code>{client.prefix}onetagstop</code>", parse_mode="html"
+        )
+        sent = failed = 0
+        templates = random.sample(ONETAG_TEMPLATES, min(len(members), len(ONETAG_TEMPLATES)))
+        try:
+            for index, (member, template) in enumerate(zip(members, templates)):
+                if stop_event.is_set():
+                    break
+                member_id = int(member.get("user_id", 0) or 0)
+                if not member_id:
+                    failed += 1
+                    continue
+                display = html.escape((member.get("name") or "Member")[:64])
+                payload = f"<blockquote>{html.escape(template)}\n<a href=\"tg://user?id={member_id}\">{display}</a></blockquote>"
+                try:
+                    await client.send_message(e.chat_id, payload, parse_mode="html", link_preview=False)
+                    sent += 1
+                except Exception:
+                    failed += 1
+                if index + 1 < len(members) and not stop_event.is_set():
+                    await asyncio.sleep(ONETAG_DELAY_SECONDS)
+            result = "🛑 <b>ONETAG STOPPED</b>" if stop_event.is_set() else "✅ <b>ONETAG FINISHED</b>"
+            await status.edit(f"{result}\nSent: <b>{sent}</b> · Failed: <b>{failed}</b>", parse_mode="html")
+        finally:
+            onetag_running.pop(key, None)
+
+    @client.on(events.NewMessage(pattern=r"^" + p + r"onetagstop$", outgoing=True))
+    async def onetag_stop(e):
+        running = onetag_running.get((uid, int(e.chat_id)))
+        if running:
+            running.set()
+            await e.edit("🛑 OneTag stop requested.")
+        else:
+            await e.edit("No OneTag process is running here.")
 
     @client.on(events.NewMessage(pattern=r"^" + p + r"tagall(?:\s+([\s\S]+))?$", outgoing=True))
     async def tagall(e):
