@@ -476,8 +476,7 @@ def setup(client):
     ONETAG_MAX_PER_RUN = 200
     ONETAG_DELAY_SECONDS = 8
     ONETAG_COOLDOWN_SECONDS = 360
-    ONETAG_TEMPLATES = [
-        ONETAG_MESSAGES = [
+    ONETAG_MESSAGES = [
     "Arey bhai, kya haal hai! ❤️",
     "Aaj toh full chill mode hai 😎",
     " मुस्कुराते raho, khush raho ❤️",
