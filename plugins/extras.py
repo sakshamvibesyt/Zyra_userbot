@@ -267,7 +267,7 @@ def setup(client):
     raid_running = set()
     RAID_OWNER_ID = _env_int("OWNER_ID", 0, 0, 2**63 - 1)
     RAID_MAX_PER_RUN = 3
-    RAID_DELAY_SECONDS = 5
+    RAID_DELAY_SECONDS = 2
     RAID_CHAT_COOLDOWN_SECONDS = 600
 
     def _is_raid_owner(event):
