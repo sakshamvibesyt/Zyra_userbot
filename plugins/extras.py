@@ -474,8 +474,8 @@ def setup(client):
     onetag_runs = database.db.zyra_onetag_runs
     onetag_running = {}
     ONETAG_MAX_PER_RUN = 200
-    ONETAG_DELAY_SECONDS = 8
-    ONETAG_COOLDOWN_SECONDS = 360
+    ONETAG_DELAY_SECONDS = 2
+    ONETAG_COOLDOWN_SECONDS = 120
     ONETAG_TEMPLATES = [
     "Arey bhai, kya haal hai! ❤️",
     "Aaj toh full chill mode hai 😎",
