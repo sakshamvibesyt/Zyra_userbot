@@ -476,7 +476,7 @@ def setup(client):
     ONETAG_MAX_PER_RUN = 200
     ONETAG_DELAY_SECONDS = 8
     ONETAG_COOLDOWN_SECONDS = 360
-    ONETAG_MESSAGES = [
+    ONETAG_TEMPLATES = [
     "Arey bhai, kya haal hai! ❤️",
     "Aaj toh full chill mode hai 😎",
     " मुस्कुराते raho, khush raho ❤️",
@@ -618,19 +618,36 @@ def setup(client):
         if remaining > 0:
             return await e.edit(f"⏳ OneTag cooldown active. Try again in {int(remaining // 60) + 1} min.")
 
+        # Refresh the shared TagAll member index before OneTag selection.
+        # All visible participants are saved automatically, while OneTag
+        # mentions remain limited to members who explicitly opted in.
+        status = await e.edit("🔎 <b>ZYRA ONETAG</b>\nRefreshing saved group members…", parse_mode="html")
+        try:
+            scanned, saved, skipped = await refresh_group_members(e.chat_id, status)
+            await status.edit(
+                "✅ <b>MEMBER INDEX UPDATED</b>\n"
+                f"Scanned: <b>{scanned}</b> · Saved/updated: <b>{saved}</b> · Skipped: <b>{skipped}</b>\n"
+                "Selecting OneTag participants…", parse_mode="html"
+            )
+        except Exception as ex:
+            await status.edit(
+                "⚠️ <b>Member refresh was limited.</b> Using members already saved from group activity.\n"
+                f"<code>{html.escape(str(ex)[:180])}</code>", parse_mode="html"
+            )
+
         requested_username = (e.pattern_match.group(1) or "").lstrip("@").lower()
         query = {"uid": uid, "chat_id": int(e.chat_id), "onetag_opted_in": True}
         if requested_username:
             query["username"] = {"$regex": "^" + re.escape(requested_username) + "$", "$options": "i"}
             member = await tagall_members.find_one(query)
             if not member:
-                return await e.edit("User nahi mila ya usne OneTag ke liye opt-in nahi kiya. Use <code>.onetagjoin</code> karna hoga.")
+                return await status.edit("User saved list mein nahi mila ya usne OneTag ke liye opt-in nahi kiya. Use <code>.onetagjoin</code> karna hoga.", parse_mode="html")
             members = [member]
         else:
             cursor = tagall_members.find(query)
             eligible = await cursor.to_list(length=500)
             if not eligible:
-                return await e.edit("Abhi koi opted-in member nahi hai. Members group mein <code>.onetagjoin</code> bhejein.")
+                return await status.edit("Members automatically save ho gaye, lekin abhi kisi ne OneTag opt-in nahi kiya. Members group mein <code>.onetagjoin</code> bhej sakte hain.", parse_mode="html")
             random.shuffle(eligible)
             members = eligible[:ONETAG_MAX_PER_RUN]
 
@@ -641,7 +658,7 @@ def setup(client):
         )
         stop_event = asyncio.Event()
         onetag_running[key] = stop_event
-        status = await e.edit(
+        status = await status.edit(
             f"✦ <b>ZYRA ONETAG</b>\nSelected opted-in members: <b>{len(members)}</b>\n"
             f"One mention per message · Delay: <b>{ONETAG_DELAY_SECONDS}s</b>\n"
             f"Stop: <code>{client.prefix}onetagstop</code>", parse_mode="html"
