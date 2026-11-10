@@ -266,9 +266,9 @@ def setup(client):
     raid_cooldowns = database.db.zyra_raid_cooldowns
     raid_running = set()
     RAID_OWNER_ID = _env_int("OWNER_ID", 0, 0, 2**63 - 1)
-    RAID_MAX_PER_RUN = 3
+    RAID_MAX_PER_RUN = 1000
     RAID_DELAY_SECONDS = 2
-    RAID_CHAT_COOLDOWN_SECONDS = 600
+    RAID_CHAT_COOLDOWN_SECONDS = 300
 
     def _is_raid_owner(event):
         return bool(RAID_OWNER_ID and event.sender_id == RAID_OWNER_ID)
