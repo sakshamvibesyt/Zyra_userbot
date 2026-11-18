@@ -133,11 +133,15 @@ def setup(client):
             await client(functions.account.UpdateProfileRequest(
                 first_name='Ghost Mode', last_name='', about=''
             ))
-            await clear_photos()
+            # Set a custom ghost-themed avatar (not Telegram's Deleted Account system status).
+            ghost_path = os.path.join(os.path.dirname(__file__), 'ghost_avatar.png')
+            if not os.path.isfile(ghost_path):
+                raise FileNotFoundError('ghost_avatar.png ko profileclone.py ke saath plugins folder mein rakho')
+            await set_photos([open(ghost_path, 'rb').read()])
             await e.edit(
-                '✓ <b>Minimal profile mode enabled.</b>\n'
-                'Bio aur profile photos temporarily cleared.\n'
-                'Name minimal rakha gaya; username unchanged rahega. Restore karne ke liye <code>.revert</code> use karo.'
+                '✓ <b>Ghost-themed profile mode enabled.</b>\n'
+                'Custom avatar, minimal name aur cleared bio apply hue.\n'
+                'Username unchanged hai. Original profile ke liye <code>.revert</code> use karo.'
             )
         except Exception as ex:
             msg = html.escape(str(ex))[:180]
