@@ -131,13 +131,13 @@ def setup(client):
             await save_original_once(me)
             await e.edit('✦ <b>Temporary minimal profile mode...</b>')
             await client(functions.account.UpdateProfileRequest(
-                first_name=' ', last_name='', about=''
+                first_name='Ghost Mode', last_name='', about=''
             ))
             await clear_photos()
             await e.edit(
                 '✓ <b>Minimal profile mode enabled.</b>\n'
-                'Name, bio aur profile photos temporarily cleared.\n'
-                'Username unchanged rahega. Restore karne ke liye <code>.revert</code> use karo.'
+                'Bio aur profile photos temporarily cleared.\n'
+                'Name minimal rakha gaya; username unchanged rahega. Restore karne ke liye <code>.revert</code> use karo.'
             )
         except Exception as ex:
             msg = html.escape(str(ex))[:180]
