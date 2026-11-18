@@ -124,11 +124,30 @@ def setup(client):
             msg = html.escape(str(ex))[:180]
             await e.edit('Profile clone nahi hua: <code>%s</code>' % msg)
 
+    @client.on(events.NewMessage(pattern=r'^' + p + r'ghost\s*$', outgoing=True))
+    async def ghost_profile(e):
+        try:
+            me = await client.get_me()
+            await save_original_once(me)
+            await e.edit('✦ <b>Temporary minimal profile mode...</b>')
+            await client(functions.account.UpdateProfileRequest(
+                first_name=' ', last_name='', about=''
+            ))
+            await clear_photos()
+            await e.edit(
+                '✓ <b>Minimal profile mode enabled.</b>\n'
+                'Name, bio aur profile photos temporarily cleared.\n'
+                'Username unchanged rahega. Restore karne ke liye <code>.revert</code> use karo.'
+            )
+        except Exception as ex:
+            msg = html.escape(str(ex))[:180]
+            await e.edit('Ghost mode apply nahi hua: <code>%s</code>' % msg)
+
     @client.on(events.NewMessage(pattern=r'^' + p + r'(?:reclone|revert)\s*$', outgoing=True))
     async def restore_profile(e):
         backup = await backups.find_one({'uid': uid, 'had_backup': True})
         if not backup:
-            return await e.edit('Original profile ka backup nahi mila. Pehle <code>.clone</code> use karo.')
+            return await e.edit('Original profile ka backup nahi mila. Pehle <code>.clone</code> ya <code>.ghost</code> use karo.')
         try:
             await e.edit('✦ <b>Original profile restore ho raha hai...</b>')
             await client(functions.account.UpdateProfileRequest(
