@@ -131,7 +131,7 @@ def setup(client):
             await save_original_once(me)
             await e.edit('✦ <b>Temporary minimal profile mode...</b>')
             await client(functions.account.UpdateProfileRequest(
-                first_name='Ghost Mode', last_name='', about=''
+                first_name='Deleted Account', last_name='', about=''
             ))
             # Set a custom ghost-themed avatar (not Telegram's Deleted Account system status).
             ghost_path = os.path.join(os.path.dirname(__file__), 'ghost_avatar.png')
