@@ -1,3 +1,4 @@
+
 """MyTron-style profile clone/revert commands adapted for Zyra's Telethon client.
 
 Usage: reply to a user's message with .clone, or use .clone @username.
@@ -41,7 +42,7 @@ def setup(client):
     async def get_photos(entity, limit=5):
         photos = await client.get_profile_photos(entity, limit=limit)
         output = []
-        # Telegram returns newest first; reverse to upload oldest-to-newest like MyTron.
+        # Telegram returns newest first; reverse to upload oldest-to-newest.
         for photo in reversed(list(photos)):
             data = await download_photo(photo)
             if data:
@@ -72,18 +73,22 @@ def setup(client):
                     except OSError:
                         pass
 
+    # Save the CURRENT profile every time, replacing the previous backup.
     async def save_original_once(me):
-        existing = await backups.find_one({'uid': uid, 'had_backup': True})
-        if existing:
-            return
-        await backups.insert_one({
+        snapshot = {
             'uid': uid,
             'first_name': me.first_name or '',
             'last_name': me.last_name or '',
             'about': await get_about(me),
             'photos': await get_photos('me', limit=5),
             'had_backup': True,
-        })
+        }
+
+        await backups.update_one(
+            {'uid': uid, 'had_backup': True},
+            {'$set': snapshot},
+            upsert=True
+        )
 
     @client.on(events.NewMessage(pattern=r'^' + p + r'clone(?:\s+@?([A-Za-z0-9_]{5,32}))?\s*$', outgoing=True))
     async def clone_profile(e):
@@ -104,7 +109,10 @@ def setup(client):
                 return await e.edit('Ye tumhara hi profile hai. Kisi doosre authorized profile ko select karo.')
 
             await e.edit('✦ <b>Profile clone ho raha hai...</b>')
+
+            # Backup the current profile before making any changes.
             await save_original_once(me)
+
             target_photos = await get_photos(target, limit=5)
             target_about = await get_about(target)
 
@@ -114,10 +122,11 @@ def setup(client):
                 about=target_about,
             ))
             await set_photos(target_photos)
+
             await e.edit(
                 '✦ <b>Profile clone complete!</b>\n'
                 'Name, bio aur available profile photos apply ho gaye.\n'
-                'Original profile ke liye <code>.reclone</code> ya <code>.revert</code> use karo.\n\n'
+                'Previous profile ke liye <code>.reclone</code> ya <code>.revert</code> use karo.\n\n'
                 '<i>Sirf permission ke saath use karo; kisi ki identity ban kar mislead mat karo.</i>'
             )
         except Exception as ex:
@@ -128,20 +137,29 @@ def setup(client):
     async def ghost_profile(e):
         try:
             me = await client.get_me()
+
+            # Backup the current profile before making any changes.
             await save_original_once(me)
+
             await e.edit('✦ <b>Temporary minimal profile mode...</b>')
             await client(functions.account.UpdateProfileRequest(
                 first_name='Deleted Account', last_name='', about=''
             ))
-            # Set a custom ghost-themed avatar (not Telegram's Deleted Account system status).
+
+            # Set a custom ghost-themed avatar.
             ghost_path = os.path.join(os.path.dirname(__file__), 'ghost_avatar.png')
             if not os.path.isfile(ghost_path):
                 raise FileNotFoundError('ghost_avatar.png ko profileclone.py ke saath plugins folder mein rakho')
-            await set_photos([open(ghost_path, 'rb').read()])
+
+            with open(ghost_path, 'rb') as f:
+                ghost_photo = f.read()
+
+            await set_photos([ghost_photo])
+
             await e.edit(
                 '✓ <b>Ghost-themed profile mode enabled.</b>\n'
                 'Custom avatar, minimal name aur cleared bio apply hue.\n'
-                'Username unchanged hai. Original profile ke liye <code>.revert</code> use karo.'
+                'Username unchanged hai. Previous profile ke liye <code>.revert</code> use karo.'
             )
         except Exception as ex:
             msg = html.escape(str(ex))[:180]
@@ -151,21 +169,29 @@ def setup(client):
     async def restore_profile(e):
         backup = await backups.find_one({'uid': uid, 'had_backup': True})
         if not backup:
-            return await e.edit('Original profile ka backup nahi mila. Pehle <code>.clone</code> ya <code>.ghost</code> use karo.')
+            return await e.edit('Profile ka backup nahi mila. Pehle <code>.clone</code> ya <code>.ghost</code> use karo.')
+
         try:
-            await e.edit('✦ <b>Original profile restore ho raha hai...</b>')
+            await e.edit('✦ <b>Previous profile restore ho raha hai...</b>')
+
             await client(functions.account.UpdateProfileRequest(
                 first_name=backup.get('first_name') or ' ',
                 last_name=backup.get('last_name') or '',
                 about=backup.get('about') or '',
             ))
+
             photos = backup.get('photos')
-            if photos is None:  # support backups created by the older Zyra plugin
+            if photos is None:  # Support older Zyra backups.
                 old_photo = backup.get('photo')
                 photos = [old_photo] if old_photo else []
+
             await set_photos(photos)
+
             await backups.delete_one({'_id': backup['_id']})
-            await e.edit('✓ <b>Original profile restored.</b> Name, bio aur saved photos wapas aa gaye.')
+
+            await e.edit('✓ <b>Previous profile restored.</b> Name, bio aur saved photos wapas aa gaye.')
+
         except Exception as ex:
             msg = html.escape(str(ex))[:180]
             await e.edit('Restore nahi hua: <code>%s</code>' % msg)
+            
